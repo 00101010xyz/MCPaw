@@ -26,6 +26,15 @@ type Target struct {
 	Vars       map[string]string
 	Secrets    map[string]string
 
+	// HostHeader, when set, replaces the outgoing HTTP Host header, independent
+	// of the address the request actually connects to. Some local services
+	// (Zotero's local API among them) validate the Host header as a
+	// DNS-rebinding defense and reject anything but a loopback name — which a
+	// container can't present honestly, since it has to dial out via a
+	// different address (host.docker.internal) to reach that same loopback
+	// service. Empty means "use the address being connected to," Go's default.
+	HostHeader string
+
 	Policy           upstream.EgressPolicy
 	Timeout          time.Duration
 	MaxResponseBytes int64

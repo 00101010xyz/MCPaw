@@ -67,6 +67,19 @@
     Allow requests to loopback and private-network addresses
   </label>
 
+  <label for="host_header_override">Host header override <span class="muted">— optional</span></label>
+  <input id="host_header_override" name="host_header_override" type="text"
+         value="{{$d.Form.HostHeaderOverride}}" placeholder="e.g. 127.0.0.1:23119">
+  <p class="hint">
+    Some local services check the request's <code>Host</code> header as a defense against DNS
+    rebinding and reject anything but a loopback name — Zotero's local API is one, accepting
+    only <code>127.0.0.1</code>, <code>localhost</code> or <code>[::1]</code>. A container has
+    to reach such a service through a different address (like
+    <code>host.docker.internal</code>), which then gets rejected as the Host header unless
+    overridden here. Leave empty unless you hit a <code>400 Bad Request</code> that a direct
+    <code>curl</code> from the host doesn't reproduce.
+  </p>
+
   <label class="check">
     <input type="checkbox" name="enabled" {{if $d.Form.Enabled}}checked{{end}}>
     Serve this endpoint immediately

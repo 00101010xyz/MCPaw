@@ -92,6 +92,20 @@
         Required when the API runs on this machine or your LAN — the Zotero desktop app
         included. Cloud instance-metadata addresses stay blocked regardless.
       </p>
+
+      <label for="host_header_override">Host header override <span class="muted">— optional</span></label>
+      <input id="host_header_override" name="host_header_override" type="text"
+             value="{{$inst.HostHeaderOverride}}" placeholder="e.g. 127.0.0.1:23119">
+      <p class="hint">
+        Some local services check the request's <code>Host</code> header as a defense against
+        DNS rebinding and reject anything but a loopback name — Zotero's local API is one,
+        accepting only <code>127.0.0.1</code>, <code>localhost</code> or <code>[::1]</code>. A
+        container reaches such a service through a different address (like
+        <code>host.docker.internal</code>), which then gets rejected as the Host header unless
+        overridden here. Leave empty unless "Test connection" fails with
+        <code>400 Bad Request</code> while a direct <code>curl</code> from the host machine
+        succeeds.
+      </p>
     </fieldset>
 
     <label class="check">

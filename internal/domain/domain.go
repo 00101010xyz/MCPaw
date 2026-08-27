@@ -118,6 +118,15 @@ type Instance struct {
 	// enabled deliberately — the Zotero local API needs it.
 	AllowPrivateNetwork bool
 
+	// HostHeaderOverride, when set, replaces the outgoing HTTP Host header on
+	// every request to this instance, independent of the address the request
+	// actually connects to. Some local services validate the Host header as a
+	// DNS-rebinding defense and reject anything but a loopback name — Zotero's
+	// local API is one, accepting only 127.0.0.1, localhost or [::1] — which a
+	// container must reach via a different address (host.docker.internal) that
+	// then gets rejected as the Host header unless overridden here.
+	HostHeaderOverride string
+
 	TimeoutMS        int
 	RateLimitPerMin  int
 	MaxConcurrent    int

@@ -148,7 +148,13 @@ type capture struct {
 	RequestURI string
 	Query      url.Values
 	Header     http.Header
-	Body       string
+	// Host is the wire Host header (r.Host on the server side). It is
+	// deliberately not part of Header: net/http special-cases it out of the
+	// header map on both the client-encode and server-decode paths, matching
+	// HTTP/1.1's treatment of Host as a distinct request-line-adjacent field
+	// rather than an ordinary header.
+	Host string
+	Body string
 }
 
 func testTarget(t *testing.T, base string) *Target {
@@ -178,6 +184,7 @@ func newServer(t *testing.T, handler func(w http.ResponseWriter, r *http.Request
 		body, _ := io.ReadAll(r.Body)
 		got.Method, got.Path, got.RequestURI = r.Method, r.URL.Path, r.RequestURI
 		got.Query, got.Header, got.Body = r.URL.Query(), r.Header.Clone(), string(body)
+		got.Host = r.Host
 		handler(w, r)
 	}))
 	t.Cleanup(srv.Close)
@@ -597,5 +604,60 @@ func TestBaseURLPathPrefixIsPreserved(t *testing.T) {
 	}
 	if got.Path != "/api/v2/items/ABC" {
 		t.Fatalf("path = %q, want the base prefix preserved", got.Path)
+	}
+}
+
+// TestHostHeaderOverride is the regression test for the Zotero local-API
+// case: some upstreams validate the wire Host header as a DNS-rebinding
+// defense and reject anything but a loopback name, which is exactly what a
+// container's actual, reachable address (e.g. host.docker.internal) is not.
+// Target.HostHeader must change what's on the wire without changing where
+// the request actually connects.
+func TestHostHeaderOverride(t *testing.T) {
+	srv, got := newServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	})
+
+	target := testTarget(t, srv.URL)
+	target.HostHeader = "127.0.0.1:23119"
+
+	if _, err := exec(t, target, testConnector(t), "get_item", map[string]any{"key": "ABC"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got.Host != "127.0.0.1:23119" {
+		t.Fatalf("wire Host header = %q, want the override", got.Host)
+	}
+}
+
+func TestHostHeaderUnsetLeavesTheConnectionAddressAsTheHostHeader(t *testing.T) {
+	srv, got := newServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	})
+
+	target := testTarget(t, srv.URL) // HostHeader left at its zero value
+
+	if _, err := exec(t, target, testConnector(t), "get_item", map[string]any{"key": "ABC"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	wantHost := strings.TrimPrefix(srv.URL, "http://")
+	if got.Host != wantHost {
+		t.Fatalf("wire Host header = %q, want %q (the address actually dialled)", got.Host, wantHost)
+	}
+}
+
+// A Host header override must go through the same control-character check as
+// any other header value MCPaw renders — a bare newline in it would be a
+// request-splitting vector once it reaches the wire.
+func TestHostHeaderOverrideRejectsControlCharacters(t *testing.T) {
+	srv, _ := newServer(t, func(w http.ResponseWriter, r *http.Request) {})
+	target := testTarget(t, srv.URL)
+	target.HostHeader = "127.0.0.1:23119\r\nX-Injected: yes"
+
+	_, err := exec(t, target, testConnector(t), "get_item", map[string]any{"key": "ABC"})
+	e, ok := AsError(err)
+	if !ok || e.Kind != KindInvalidArguments {
+		t.Fatalf("got %v, want a rejected host header override", err)
 	}
 }

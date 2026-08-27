@@ -255,11 +255,19 @@ docker compose up  ──►  mcpaw:8080   ──►  /            web UI (admin
                                            /healthz /readyz /metrics
 ```
 
-The Zotero case has one wrinkle worth stating plainly: the Zotero local API listens on
-`127.0.0.1:23119` **on the host**, which is not the container's loopback. MCPaw therefore ships with
-`host.docker.internal` as the connector default and requires the operator to consciously enable
-private-network egress for that instance — the security control and the deployment reality are
-surfaced together in the UI rather than silently defaulted.
+The Zotero case has two wrinkles worth stating plainly. First, the Zotero local API listens
+on `127.0.0.1:23119` **on the host**, which is not the container's loopback. MCPaw therefore
+ships with `host.docker.internal` as the connector default and requires the operator to
+consciously enable private-network egress for that instance — the security control and the
+deployment reality are surfaced together in the UI rather than silently defaulted. Second,
+Zotero's local API validates the request's `Host` header as a DNS-rebinding defense, accepting
+only `127.0.0.1`, `localhost` or `[::1]` — which `host.docker.internal` is not, so a
+request that reaches the API perfectly well is still rejected with `400` on HTTP semantics
+alone. `domain.Instance.HostHeaderOverride` (wired through `engine.Target.HostHeader` to
+`http.Request.Host`, since Go's client takes the wire Host header from `Request.Host` rather
+than from the header map) exists specifically to let an instance connect via one address while
+presenting another — the web UI pre-fills it with `127.0.0.1:<port>` automatically whenever a
+connector's default base URL points at `host.docker.internal`.
 
 ---
 

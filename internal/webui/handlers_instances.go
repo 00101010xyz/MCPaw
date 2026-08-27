@@ -2,6 +2,7 @@ package webui
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/00101010xyz/mcpaw/internal/connector"
@@ -29,6 +30,7 @@ type instanceForm struct {
 	Variables           map[string]string
 	Enabled             bool
 	AllowPrivateNetwork bool
+	HostHeaderOverride  string
 }
 
 // GetNewInstance renders the creation form.
@@ -76,7 +78,28 @@ func defaultForm(selected *connector.Entry) *instanceForm {
 	// Pre-ticking the egress box for a connector that documents it as required
 	// would defeat the purpose of asking, so it stays off and the form explains
 	// why it exists.
+	form.HostHeaderOverride = suggestHostHeaderOverride(selected.Compiled.Manifest.Spec.BaseURL.Default)
 	return form
+}
+
+// suggestHostHeaderOverride pre-fills the Host header override for the one
+// case it is reliably correct to guess: a connector whose default base URL
+// points at host.docker.internal, the address a container uses to reach a
+// service bound to the host machine's own loopback interface. Such a service
+// (the Zotero desktop app's local API is the shipped example) very often
+// validates the Host header as a DNS-rebinding defense and rejects anything
+// but a loopback name — exactly what host.docker.internal is not. Presenting
+// 127.0.0.1 there, while still connecting via host.docker.internal, is
+// correct far more often than not; the field stays editable either way.
+func suggestHostHeaderOverride(defaultBaseURL string) string {
+	u, err := url.Parse(defaultBaseURL)
+	if err != nil || u.Hostname() != "host.docker.internal" {
+		return ""
+	}
+	if port := u.Port(); port != "" {
+		return "127.0.0.1:" + port
+	}
+	return "127.0.0.1"
 }
 
 // PostInstances handles both the "choose connector" refresh and the create
@@ -103,12 +126,14 @@ func (s *Server) PostInstances(w http.ResponseWriter, r *http.Request) {
 		Variables:           collectVariables(r, entry),
 		Enabled:             checkbox(r, "enabled"),
 		AllowPrivateNetwork: checkbox(r, "allow_private_network"),
+		HostHeaderOverride:  strings.TrimSpace(r.PostFormValue("host_header_override")),
 	}
 
 	instance, err := s.instances.Create(r.Context(), s.actor(r), service.CreateInput{
 		Name: form.Name, Slug: form.Slug, Description: form.Description,
 		ConnectorID: connectorID, BaseURL: form.BaseURL, Variables: form.Variables,
 		Enabled: form.Enabled, AllowPrivateNetwork: form.AllowPrivateNetwork,
+		HostHeaderOverride: form.HostHeaderOverride,
 	})
 	if err != nil {
 		data := s.page(r, "New instance", "instances", nil)
@@ -163,10 +188,12 @@ func (s *Server) PostInstance(w http.ResponseWriter, r *http.Request) {
 	baseURL := r.PostFormValue("base_url")
 	enabled := checkbox(r, "enabled")
 	allowPrivate := checkbox(r, "allow_private_network")
+	hostHeaderOverride := strings.TrimSpace(r.PostFormValue("host_header_override"))
 
 	in := service.UpdateInput{
 		Name: &name, Description: &description, BaseURL: &baseURL,
 		Enabled: &enabled, AllowPrivateNetwork: &allowPrivate,
+		HostHeaderOverride: &hostHeaderOverride,
 	}
 	if detail.Connector != nil {
 		vars := collectVariables(r, detail.Connector)

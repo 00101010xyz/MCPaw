@@ -42,6 +42,15 @@ func buildRequest(target *Target, conn *connector.Compiled, tool *connector.Comp
 	if err != nil {
 		return nil, newError(KindInternal, "could not construct the upstream request", err)
 	}
+	if target.HostHeader != "" {
+		if err := validateHeaderValue("Host", target.HostHeader); err != nil {
+			return nil, err
+		}
+		// Setting Header["Host"] would have no effect: net/http special-cases
+		// the wire Host header and always takes it from Request.Host (falling
+		// back to the URL's host), never from the header map.
+		req.Host = target.HostHeader
+	}
 	if body != nil {
 		req.ContentLength = int64(len(body))
 		if contentType != "" {

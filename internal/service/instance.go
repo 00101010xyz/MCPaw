@@ -123,6 +123,7 @@ type CreateInput struct {
 	Variables           map[string]string
 	Enabled             bool
 	AllowPrivateNetwork bool
+	HostHeaderOverride  string
 	TimeoutMS           int
 	RateLimitPerMin     int
 	MaxConcurrent       int
@@ -139,6 +140,7 @@ type UpdateInput struct {
 	Variables           map[string]string
 	Enabled             *bool
 	AllowPrivateNetwork *bool
+	HostHeaderOverride  *string
 	TimeoutMS           *int
 	RateLimitPerMin     *int
 	MaxConcurrent       *int
@@ -181,6 +183,10 @@ func (s *Instances) Create(ctx context.Context, actor Actor, in CreateInput) (*d
 	if err := entry.Compiled.ValidateVariables(in.Variables); err != nil {
 		return nil, fmt.Errorf("%w: %s", domain.ErrInvalidInput, err)
 	}
+	hostHeaderOverride := strings.TrimSpace(in.HostHeaderOverride)
+	if err := validateHostHeaderOverride(hostHeaderOverride); err != nil {
+		return nil, err
+	}
 
 	defaults := entry.Compiled.Manifest.Spec.Defaults
 	now := s.now().UTC()
@@ -190,6 +196,7 @@ func (s *Instances) Create(ctx context.Context, actor Actor, in CreateInput) (*d
 		ConnectorID: in.ConnectorID, BaseURL: baseURL,
 		Variables: in.Variables, Enabled: in.Enabled,
 		AllowPrivateNetwork: in.AllowPrivateNetwork,
+		HostHeaderOverride:  hostHeaderOverride,
 		TimeoutMS:           clampTimeout(pickInt(in.TimeoutMS, defaults.TimeoutMS, connector.DefaultTimeoutMS)),
 		RateLimitPerMin:     clampNonNegative(pickInt(in.RateLimitPerMin, defaults.RateLimitPerMin, connector.DefaultRateLimitPerMin)),
 		MaxConcurrent:       clampConcurrency(pickInt(in.MaxConcurrent, defaults.MaxConcurrent, connector.DefaultMaxConcurrent)),
@@ -265,6 +272,13 @@ func (s *Instances) Update(ctx context.Context, actor Actor, instanceID string, 
 		egressOpened = *in.AllowPrivateNetwork && !inst.AllowPrivateNetwork
 		inst.AllowPrivateNetwork = *in.AllowPrivateNetwork
 		changed["allow_private_network"] = *in.AllowPrivateNetwork
+	}
+	if in.HostHeaderOverride != nil {
+		override := strings.TrimSpace(*in.HostHeaderOverride)
+		if err := validateHostHeaderOverride(override); err != nil {
+			return nil, err
+		}
+		inst.HostHeaderOverride, changed["host_header_override"] = override, override
 	}
 	if in.TimeoutMS != nil {
 		inst.TimeoutMS, changed["timeout_ms"] = clampTimeout(*in.TimeoutMS), clampTimeout(*in.TimeoutMS)
@@ -600,6 +614,7 @@ func (s *Instances) Target(r *Resolved) (*engine.Target, error) {
 		BaseURL:    base,
 		Vars:       r.Connector.ResolveVariables(r.Instance.Variables),
 		Secrets:    plaintext,
+		HostHeader: r.Instance.HostHeaderOverride,
 		Policy: upstream.EgressPolicy{
 			AllowPrivateNetworks: r.Instance.AllowPrivateNetwork,
 		},
@@ -685,6 +700,26 @@ func pickInt64(supplied, connectorDefault, platformDefault int64) int64 {
 		return connectorDefault
 	}
 	return platformDefault
+}
+
+// validateHostHeaderOverride enforces the shape of an HTTP Host header value.
+// Empty is valid — it means "no override, use the connection address" — but a
+// non-empty value must be a plausible host[:port] with no whitespace or
+// control characters, which would otherwise be a request-splitting vector
+// once it reaches the outgoing request's Host field.
+func validateHostHeaderOverride(v string) error {
+	if v == "" {
+		return nil
+	}
+	if len(v) > 255 {
+		return fmt.Errorf("%w: the host header override is too long", domain.ErrInvalidInput)
+	}
+	for _, r := range v {
+		if r <= ' ' || r == 0x7f {
+			return fmt.Errorf("%w: the host header override must not contain whitespace or control characters", domain.ErrInvalidInput)
+		}
+	}
+	return nil
 }
 
 func clampTimeout(ms int) int {

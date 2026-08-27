@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"time"
 
 	"github.com/00101010xyz/mcpaw/internal/connector"
@@ -158,6 +159,11 @@ func hintFor(e *engine.Error, r *Resolved) string {
 		case e.StatusCode == 404:
 			return "The upstream returned 404. Check the base URL and the instance variables " +
 				"(for the Zotero local API the user id must be 0)."
+		case e.StatusCode == 400 && r.Instance.AllowPrivateNetwork && r.Instance.HostHeaderOverride == "":
+			return "The upstream returned 400. If a direct curl to the same address succeeds, the " +
+				"upstream is likely rejecting the request's Host header as a DNS-rebinding defense " +
+				"(Zotero's local API only accepts 127.0.0.1, localhost or [::1]) — try setting " +
+				"\"Host header override\" below to " + suggestedHostOverride(r.Instance.BaseURL) + "."
 		default:
 			return "The upstream answered with an error status; the excerpt above is its own explanation."
 		}
@@ -168,4 +174,16 @@ func hintFor(e *engine.Error, r *Resolved) string {
 	default:
 		return ""
 	}
+}
+
+// suggestedHostOverride derives a concrete "127.0.0.1[:port]" suggestion from
+// the instance's own configured base URL, so the hint names an exact value to
+// type rather than making the operator work out the port themselves.
+func suggestedHostOverride(baseURL string) string {
+	if u, err := url.Parse(baseURL); err == nil {
+		if port := u.Port(); port != "" {
+			return "127.0.0.1:" + port
+		}
+	}
+	return "127.0.0.1"
 }

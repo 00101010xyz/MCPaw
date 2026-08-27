@@ -1,0 +1,28 @@
+version: 2
+updates:
+  # Go module dependencies (the four direct ones + their transitive graph).
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      go-dependencies:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # Keeps the actions pinned in .github/workflows/*.yml (checkout, setup-go,
+  # buildx, metadata-action, etc.) current — these are also a supply-chain
+  # surface and are otherwise easy to forget.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  # The Dockerfile's builder (golang) and final (distroless) base images.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly

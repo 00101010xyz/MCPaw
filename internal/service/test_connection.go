@@ -162,8 +162,9 @@ func hintFor(e *engine.Error, r *Resolved) string {
 		case e.StatusCode == 400 && r.Instance.AllowPrivateNetwork && r.Instance.HostHeaderOverride == "":
 			return "The upstream returned 400. If a direct curl to the same address succeeds, the " +
 				"upstream is likely rejecting the request's Host header as a DNS-rebinding defense " +
-				"(Zotero's local API only accepts 127.0.0.1, localhost or [::1]) — try setting " +
-				"\"Host header override\" below to " + suggestedHostOverride(r.Instance.BaseURL) + "."
+				"(Zotero's local API only accepts 127.0.0.1, localhost or [::1], on the exact port " +
+				"it listens on) — try setting \"Host header override\" below to exactly " +
+				"\"" + suggestedHostOverride(r.Instance.BaseURL) + "\" (the port matters)."
 		default:
 			return "The upstream answered with an error status; the excerpt above is its own explanation."
 		}

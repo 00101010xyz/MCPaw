@@ -41,12 +41,14 @@ Once signed in:
    regardless.
 3. Leave the `userId` variable at its default (`0`) — that's what the local API always
    uses. No secret is required for the local API.
-4. Leave **Host header override** at its pre-filled `127.0.0.1:23119`. Zotero's local API
-   checks the request's `Host` header as a DNS-rebinding defense and only accepts
-   `127.0.0.1`, `localhost`, or `[::1]` — rejecting anything else, including
-   `host.docker.internal`, with `400 Bad Request`. This field lets MCPaw connect via
-   `host.docker.internal` (the only address that actually reaches your host from inside
-   the container) while still presenting a `Host` header Zotero accepts.
+4. Leave **Host header override** at its pre-filled `127.0.0.1:23119` — **including the
+   port**; `127.0.0.1` alone is a different Host header and Zotero will still reject it.
+   Zotero's local API checks the request's `Host` header as a DNS-rebinding defense and
+   only accepts `127.0.0.1`, `localhost`, or `[::1]` on the exact port it's listening on
+   — rejecting anything else, including `host.docker.internal`, with `400 Bad Request`.
+   This field lets MCPaw connect via `host.docker.internal` (the only address that
+   actually reaches your host from inside the container) while still presenting a `Host`
+   header Zotero accepts.
 5. Click **Test connection** to confirm MCPaw can actually reach a running Zotero desktop
    app before handing the endpoint to a client.
 6. **Issue a token** (Tokens → Issue a token), scoped to this one instance rather than to

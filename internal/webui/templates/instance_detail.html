@@ -25,6 +25,18 @@
     <p class="graphite__label"><span>mcp streamable http</span><span>bearer auth</span></p>
     <code class="graphite__body">{{.PublicURL}}/mcp/{{$inst.Slug}}</code>
   </div>
+  <dl class="facts">
+    <dt>Transport type</dt><dd>HTTP <span class="muted">(Streamable HTTP — not STDIO or SSE)</span></dd>
+    <dt>Server URL</dt><dd><code>{{.PublicURL}}/mcp/{{$inst.Slug}}</code></dd>
+    <dt>Auth header</dt><dd><code>Authorization: Bearer &lt;token&gt;</code></dd>
+  </dl>
+  <p class="hint">
+    In a client's "Add MCP Server" form, these three map to its Transport Type, Server URL (or
+    equivalent), and a request header (name <code>Authorization</code>, value
+    <code>Bearer &lt;token&gt;</code>) — issue a token below if you don't have one yet. If the
+    client only offers STDIO, it can't reach an HTTP-based server directly; look for a "remote"
+    or "HTTP" server option instead.
+  </p>
   <div class="actions">
     <form method="post" action="/instances/{{$inst.ID}}/test" class="inline">
       <input type="hidden" name="csrf_token" value="{{$csrf}}">

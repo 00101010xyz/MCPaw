@@ -40,6 +40,7 @@ type Server struct {
 	connectors *service.Connectors
 	tokens     *service.Tokens
 	audit      *service.Audit
+	indexer    *service.Indexer
 
 	pages   map[string]*template.Template
 	flashes *flashStore
@@ -61,6 +62,7 @@ type Config struct {
 	Connectors    *service.Connectors
 	Tokens        *service.Tokens
 	Audit         *service.Audit
+	Indexer       *service.Indexer
 	Logger        *slog.Logger
 	PublicURL     string
 	Version       string
@@ -92,7 +94,7 @@ func New(cfg Config) (*Server, error) {
 
 	return &Server{
 		users: cfg.Users, sessions: cfg.Sessions, instances: cfg.Instances,
-		connectors: cfg.Connectors, tokens: cfg.Tokens, audit: cfg.Audit,
+		connectors: cfg.Connectors, tokens: cfg.Tokens, audit: cfg.Audit, indexer: cfg.Indexer,
 		pages: pages, flashes: newFlashStore(2 * time.Minute), logger: cfg.Logger,
 		publicURL: strings.TrimRight(cfg.PublicURL, "/"), version: cfg.Version,
 		secureCookies: cfg.SecureCookies, sessionMaxAge: cfg.SessionMaxAge,

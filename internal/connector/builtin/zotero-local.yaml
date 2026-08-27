@@ -3,7 +3,7 @@ kind: Connector
 metadata:
   id: zotero-local
   name: Zotero (Local API)
-  version: 1.0.0
+  version: 1.2.0
   description: >-
     Read-only access to a Zotero library through the HTTP API that the Zotero
     desktop application exposes on the local machine. The same manifest also
@@ -43,12 +43,33 @@ spec:
       required: true
       pattern: '^[0-9]{1,20}$'
       example: "0"
+    - name: embedderUrl
+      description: >-
+        Base URL of an Ollama-compatible embeddings sidecar (Ollama itself, or
+        text-embeddings-inference), used only for the optional semantic search
+        tool. Leave empty to leave semantic search off — every other tool
+        works without it. host.docker.internal reaches an embedder running on
+        this machine, the same way the base URL above reaches Zotero.
+      required: false
+      pattern: '^https?://[^\s]+$'
+      example: http://host.docker.internal:11434
+    - name: embedderModel
+      description: >-
+        Embedding model name to request from the sidecar, e.g.
+        nomic-embed-text or mxbai-embed-large. Defaults to nomic-embed-text.
+      default: nomic-embed-text
+      required: false
 
   secrets:
     - name: apiKey
       description: >-
         Zotero Web API key. Leave empty for the local desktop API, which does
         not authenticate.
+      required: false
+    - name: embedderApiKey
+      description: >-
+        Bearer token for the embeddings sidecar, if it requires one. Most
+        local setups (a bare Ollama instance) do not.
       required: false
 
   defaults:
@@ -65,8 +86,12 @@ spec:
       title: Search library items
       description: >-
         Search the Zotero library for items by keyword, item type or tag.
-        Returns bibliographic metadata for each match. Use qmode=everything to
-        search full text and notes as well as titles, creators and years.
+        Returns bibliographic metadata for each match, not document content —
+        good for "find the paper by Smith from 2021", not for "find text
+        about X". For a natural-language question or topic where you want
+        matching passages rather than a metadata list, prefer
+        zotero_semantic_search if it is available. Use qmode=everything to
+        also match full text and notes, not just titles, creators and years.
       annotations:
         readOnlyHint: true
         openWorldHint: false
@@ -213,6 +238,73 @@ spec:
         method: GET
         path: /api/users/{{vars.userId}}/items/{{input.itemKey}}/children
         query:
+          limit: "{{input.limit|default:50}}"
+          format: json
+          include: data
+      response:
+        successCodes: [200]
+        format: json
+        includeHeaders: [Total-Results]
+
+    - name: zotero_get_item_fulltext
+      title: Get extracted full text
+      description: >-
+        Fetch the ENTIRE text Zotero has extracted and indexed from a PDF or
+        snapshot attachment — the same text its full-text search runs
+        against. This can be tens of thousands of words; fetching it just to
+        look for something specific is expensive and usually the wrong tool.
+        If zotero_semantic_search is available, use it first to find the
+        relevant passages — reach for this tool only when you actually need
+        the complete document, e.g. to summarize it in full. Pass the
+        attachment's own item key, not its parent's (use
+        zotero_get_item_children to find it).
+      annotations:
+        readOnlyHint: true
+        openWorldHint: false
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required: [itemKey]
+        properties:
+          itemKey:
+            type: string
+            description: Eight character key of the attachment item.
+            pattern: '^[A-Z0-9]{8}$'
+      request:
+        method: GET
+        path: /api/users/{{vars.userId}}/items/{{input.itemKey}}/fulltext
+      response:
+        successCodes: [200]
+        format: json
+
+    - name: zotero_get_item_annotations
+      title: Get item annotations
+      description: >-
+        List the PDF annotations (highlights, sticky notes, ink, image regions)
+        made on an item's attachments, with their text, comments, colors and
+        page position — the same annotations shown in Zotero's PDF reader
+        sidebar. Pass the parent item's key; annotations are read from all of
+        its attachments' children.
+      annotations:
+        readOnlyHint: true
+        openWorldHint: false
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required: [itemKey]
+        properties:
+          itemKey:
+            type: string
+            pattern: '^[A-Z0-9]{8}$'
+          limit:
+            type: integer
+            minimum: 1
+            maximum: 100
+      request:
+        method: GET
+        path: /api/users/{{vars.userId}}/items/{{input.itemKey}}/children
+        query:
+          itemType: annotation
           limit: "{{input.limit|default:50}}"
           format: json
           include: data

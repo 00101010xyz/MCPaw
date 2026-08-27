@@ -170,8 +170,34 @@ func (s *Server) GetInstance(w http.ResponseWriter, r *http.Request) {
 		s.notFound(w, r, err)
 		return
 	}
+	data := map[string]any{"Detail": detail}
+	if s.indexer != nil && detail.Connector != nil && s.indexer.Supported(detail.Connector.Record.ID) {
+		status, count, err := s.indexer.Status(r.Context(), detail.Instance.ID)
+		if err != nil {
+			s.logger.Warn("reading search index status", "instance_id", detail.Instance.ID, "error", err)
+		} else {
+			data["SearchIndex"] = map[string]any{"Status": status, "ChunkCount": count}
+		}
+	}
 	s.render(w, r, http.StatusOK, "instance_detail",
-		s.page(r, detail.Instance.Name, "instances", map[string]any{"Detail": detail}))
+		s.page(r, detail.Instance.Name, "instances", data))
+}
+
+// PostInstanceReindex starts a background rebuild of an instance's semantic
+// search index.
+func (s *Server) PostInstanceReindex(w http.ResponseWriter, r *http.Request) {
+	instanceID := r.PathValue("id")
+	if s.indexer == nil {
+		s.flashError(r, "Semantic search is not available on this deployment.")
+		redirect(w, r, "/instances/"+instanceID)
+		return
+	}
+	if err := s.indexer.Reindex(r.Context(), s.actor(r), instanceID); err != nil {
+		s.flashError(r, "%s", errorMessage(err))
+	} else {
+		s.flashSuccess(r, "Reindexing started. This can take a while for a large library; refresh this page to check progress.")
+	}
+	redirect(w, r, "/instances/"+instanceID)
 }
 
 // PostInstance saves a configuration change.

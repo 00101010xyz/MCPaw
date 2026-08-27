@@ -116,6 +116,20 @@ go test ./...
 SQLite database and exercise it through actual HTTP requests — including the CSRF and
 bearer-token-scoping behaviour — rather than mocking the stack away.
 
+## Semantic search over PDFs and snapshots
+
+The Zotero connector can index the text it extracts from PDF and snapshot
+attachments and expose a `zotero_semantic_search` tool that returns short,
+relevant excerpts instead of whole documents — cheaper for an MCP client to
+consume than `zotero_get_item_fulltext`, and more targeted than
+`zotero_search_items`'s metadata search. It needs a local embeddings sidecar
+(e.g. [Ollama](https://ollama.com) running an embedding model such as
+`nomic-embed-text`, exposed at `http://host.docker.internal:11434`) — set
+that as the instance's `embedderUrl` variable, then use **Build index** on
+the instance page. The tool is only advertised to clients once the index
+holds at least one chunk; leaving `embedderUrl` empty leaves the feature off
+entirely, with no other effect on the instance.
+
 ## Adding a connector
 
 A connector is a declarative YAML manifest — base URL, authentication scheme, variables,

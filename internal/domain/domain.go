@@ -159,6 +159,27 @@ type ToolBinding struct {
 	Enabled    bool
 }
 
+// IndexChunk is one embedded, searchable slice of text extracted from an
+// attachment (a PDF or snapshot) belonging to a Zotero item, for the
+// semantic-search index. ItemKey identifies the parent library item;
+// AttachmentKey identifies the specific attachment the text came from, since
+// an item can carry more than one.
+type IndexChunk struct {
+	ID            int64
+	InstanceID    string
+	ItemKey       string
+	AttachmentKey string
+	ChunkIndex    int
+	CharStart     int
+	CharEnd       int
+	Text          string
+	// Embedding is the chunk's vector, in the dimensionality the configured
+	// embedder produced it in. Chunks from a different model or dimension
+	// count must never be compared against one another, which is why a
+	// reindex clears the whole instance rather than merging.
+	Embedding []float32
+}
+
 // Token is a bearer credential presented by an MCP client. Only the SHA-256
 // hash is stored; the plaintext is displayed exactly once at creation.
 type Token struct {
@@ -225,4 +246,5 @@ const (
 	ActionTokenCreate        = "token.create"
 	ActionTokenRevoke        = "token.revoke"
 	ActionToolCall           = "tool.call"
+	ActionIndexReindex       = "instance.index_reindex"
 )

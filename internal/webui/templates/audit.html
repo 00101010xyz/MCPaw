@@ -1,0 +1,51 @@
+{{define "content"}}
+{{$d := .Data}}
+<div class="page-head">
+  <div>
+    <h1>Audit log</h1>
+    <p class="lede">
+      Every configuration change, sign-in, token issuance and tool call is recorded.
+      Tool-call entries omit arguments on purpose — they can carry the content of your
+      queries.
+    </p>
+  </div>
+</div>
+
+<form method="get" action="/audit" class="panel panel--tight filter">
+  <div>
+    <label for="action">Action</label>
+    <select id="action" name="action">
+      <option value="">Everything</option>
+      {{range $d.Actions}}<option value="{{.}}"{{if eq . $d.SelectedAction}} selected{{end}}>{{.}}</option>{{end}}
+    </select>
+  </div>
+  <button type="submit" class="btn">Filter</button>
+</form>
+
+<section class="panel panel--tight">
+  {{if not $d.Events}}
+  <p class="muted">No matching events.</p>
+  {{else}}
+  <div class="table-wrap">
+    <table class="table-stack">
+      <thead><tr><th>When</th><th>Action</th><th>Actor</th><th>Target</th><th>Result</th><th>Detail</th></tr></thead>
+      <tbody>
+      {{range $d.Events}}
+        <tr>
+          <td data-label="When" class="muted nowrap mono">{{formatTime .Event.At}}</td>
+          <td data-label="Action"><code>{{.Event.Action}}</code></td>
+          <td data-label="Actor" class="muted">{{.ActorLabel}}</td>
+          <td data-label="Target" class="muted"><span class="mono">{{.Event.TargetID}}</span></td>
+          <td data-label="Result">
+            {{if eq .Event.Result "success"}}<span class="tag tag--ok">ok</span>
+            {{else}}<span class="tag tag--warn">{{.Event.Result}}</span>{{end}}
+          </td>
+          <td data-label="Detail" class="cell-detail">{{.DetailLabel}}</td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{end}}
+</section>
+{{end}}

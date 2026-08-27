@@ -1,0 +1,441 @@
+package connector
+
+import (
+	"strings"
+	"testing"
+)
+
+const minimalManifest = `
+apiVersion: mcpaw.dev/v1
+kind: Connector
+metadata:
+  id: example
+  name: Example
+  version: 1.0.0
+spec:
+  baseUrl:
+    default: https://api.example.com
+  variables:
+    - name: accountId
+      default: "42"
+      pattern: '^[0-9]+$'
+  secrets:
+    - name: apiKey
+      required: true
+  auth:
+    type: bearer
+    value: "{{secrets.apiKey}}"
+  tools:
+    - name: get_thing
+      description: Fetch a thing.
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required: [thingId]
+        properties:
+          thingId: {type: string}
+          limit: {type: integer}
+      request:
+        method: GET
+        path: /accounts/{{vars.accountId}}/things/{{input.thingId}}
+        query:
+          limit: "{{input.limit|default:10}}"
+      response:
+        successCodes: [200]
+`
+
+func compileString(t *testing.T, src string) (*Compiled, error) {
+	t.Helper()
+	m, err := ParseManifest([]byte(src))
+	if err != nil {
+		return nil, err
+	}
+	return Compile(m)
+}
+
+func mustCompile(t *testing.T, src string) *Compiled {
+	t.Helper()
+	c, err := compileString(t, src)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	return c
+}
+
+func TestCompileMinimalManifest(t *testing.T) {
+	c := mustCompile(t, minimalManifest)
+	if len(c.Tools) != 1 {
+		t.Fatalf("got %d tools, want 1", len(c.Tools))
+	}
+	tool, ok := c.Tool("get_thing")
+	if !ok {
+		t.Fatal("tool lookup by name failed")
+	}
+	if tool.InputSchema == nil || tool.Path == nil {
+		t.Fatal("tool was not fully compiled")
+	}
+	if !tool.EnabledByDefault() {
+		t.Fatal("a non-disabled tool should be enabled by default")
+	}
+	if c.Auth.Type != AuthBearer {
+		t.Fatalf("auth type = %q", c.Auth.Type)
+	}
+}
+
+// Every manifest shipped inside the binary must compile, because a broken one
+// would only be discovered by an operator at their first tool call.
+func TestBuiltinManifestsCompile(t *testing.T) {
+	recs, err := Builtins()
+	if err != nil {
+		t.Fatalf("Builtins: %v", err)
+	}
+	if len(recs) == 0 {
+		t.Fatal("no built-in connectors were embedded")
+	}
+	var foundZotero bool
+	for _, rec := range recs {
+		if rec.ID == "zotero-local" {
+			foundZotero = true
+		}
+		if rec.Checksum == "" || rec.Source != "builtin" {
+			t.Fatalf("built-in %s has bad provenance: %+v", rec.ID, rec)
+		}
+	}
+	if !foundZotero {
+		t.Fatal("the Zotero connector is missing from the built-ins")
+	}
+}
+
+func TestZoteroConnectorShape(t *testing.T) {
+	recs, err := Builtins()
+	if err != nil {
+		t.Fatalf("Builtins: %v", err)
+	}
+	var zotero *Compiled
+	for _, rec := range recs {
+		if rec.ID == "zotero-local" {
+			m, err := ParseManifest(rec.Manifest)
+			if err != nil {
+				t.Fatalf("ParseManifest: %v", err)
+			}
+			if zotero, err = Compile(m); err != nil {
+				t.Fatalf("Compile: %v", err)
+			}
+		}
+	}
+	if zotero == nil {
+		t.Fatal("zotero connector not found")
+	}
+
+	if !zotero.Manifest.Spec.BaseURL.RequiresPrivateNetwork {
+		t.Error("the Zotero connector must declare that it needs private-network egress")
+	}
+	for _, want := range []string{
+		"zotero_search_items", "zotero_get_item", "zotero_list_collections",
+		"zotero_list_collection_items", "zotero_list_tags", "zotero_export_items",
+	} {
+		tool, ok := zotero.Tool(want)
+		if !ok {
+			t.Errorf("missing tool %s", want)
+			continue
+		}
+		// The local Zotero API is read-only; every shipped tool must say so and
+		// must actually be a safe method.
+		if tool.Def.Annotations == nil || tool.Def.Annotations.ReadOnlyHint == nil || !*tool.Def.Annotations.ReadOnlyHint {
+			t.Errorf("tool %s is missing readOnlyHint", want)
+		}
+		if tool.Def.Request.Method != "GET" {
+			t.Errorf("tool %s uses %s, want GET", want, tool.Def.Request.Method)
+		}
+	}
+
+	// The api key is optional so the same connector serves the unauthenticated
+	// local API and the authenticated hosted one.
+	if len(zotero.Secrets()) != 1 || zotero.Secrets()[0].Required {
+		t.Errorf("unexpected secret declaration: %+v", zotero.Secrets())
+	}
+	if missing := zotero.MissingRequiredSecrets(nil); len(missing) != 0 {
+		t.Errorf("Zotero should work with no secrets, missing=%v", missing)
+	}
+}
+
+func TestParseManifestRejectsUnknownFields(t *testing.T) {
+	src := strings.Replace(minimalManifest, "  version: 1.0.0", "  version: 1.0.0\n  typoedField: oops", 1)
+	if _, err := ParseManifest([]byte(src)); err == nil {
+		t.Fatal("unknown field was silently ignored")
+	}
+}
+
+func TestParseManifestRejectsMultipleDocuments(t *testing.T) {
+	if _, err := ParseManifest([]byte(minimalManifest + "\n---\n" + minimalManifest)); err == nil {
+		t.Fatal("multi-document manifest accepted")
+	}
+}
+
+func TestParseManifestRejectsEmptyAndOversized(t *testing.T) {
+	if _, err := ParseManifest(nil); err == nil {
+		t.Fatal("empty manifest accepted")
+	}
+	if _, err := ParseManifest([]byte(strings.Repeat("x", maxManifestBytes+1))); err == nil {
+		t.Fatal("oversized manifest accepted")
+	}
+}
+
+func TestValidationCatchesManifestMistakes(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(string) string
+		wantSub string
+	}{
+		{"wrong apiVersion", func(s string) string {
+			return strings.Replace(s, "apiVersion: mcpaw.dev/v1", "apiVersion: v2", 1)
+		}, "apiVersion"},
+		{"undeclared variable", func(s string) string {
+			return strings.Replace(s, "{{vars.accountId}}", "{{vars.nope}}", 1)
+		}, "undeclared variable"},
+		{"undeclared secret", func(s string) string {
+			return strings.Replace(s, "{{secrets.apiKey}}", "{{secrets.other}}", 1)
+		}, "undeclared secret"},
+		{"input not in schema", func(s string) string {
+			return strings.Replace(s, "{{input.thingId}}", "{{input.thingID}}", 1)
+		}, "not a property of inputSchema"},
+		{"relative path", func(s string) string {
+			return strings.Replace(s, "path: /accounts", "path: accounts", 1)
+		}, "must start with /"},
+		{"absolute url as path", func(s string) string {
+			return strings.Replace(s, "path: /accounts", "path: /x\n        # \n", 1)
+		}, ""},
+		{"bad method", func(s string) string {
+			return strings.Replace(s, "method: GET", "method: TRACE", 1)
+		}, "not permitted"},
+		{"non-object input schema", func(s string) string {
+			return strings.Replace(s, "        type: object\n        additionalProperties: false", "        type: array", 1)
+		}, "must be \"object\""},
+		{"bad tool name", func(s string) string {
+			return strings.Replace(s, "name: get_thing", "name: 9invalid!", 1)
+		}, "must match"},
+		{"missing description", func(s string) string {
+			return strings.Replace(s, "      description: Fetch a thing.", "      description: \"\"", 1)
+		}, "description must not be empty"},
+		{"bad base url", func(s string) string {
+			return strings.Replace(s, "default: https://api.example.com", "default: ftp://api.example.com", 1)
+		}, "scheme must be http or https"},
+		{"credentials in base url", func(s string) string {
+			return strings.Replace(s, "default: https://api.example.com", "default: https://user:pw@api.example.com", 1)
+		}, "must not embed credentials"},
+		{"default violates own pattern", func(s string) string {
+			return strings.Replace(s, `      default: "42"`, `      default: "abc"`, 1)
+		}, "does not match its own pattern"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := compileString(t, tc.mutate(minimalManifest))
+			if err == nil {
+				t.Fatal("expected a validation error")
+			}
+			if tc.wantSub != "" && !strings.Contains(err.Error(), tc.wantSub) {
+				t.Fatalf("error %q does not mention %q", err, tc.wantSub)
+			}
+		})
+	}
+}
+
+func TestValidationReportsEveryProblemAtOnce(t *testing.T) {
+	src := strings.Replace(minimalManifest, "{{vars.accountId}}", "{{vars.nope}}", 1)
+	src = strings.Replace(src, "method: GET", "method: TRACE", 1)
+	_, err := compileString(t, src)
+	var ve *ValidationError
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !asValidationError(err, &ve) || len(ve.Problems) < 2 {
+		t.Fatalf("expected several problems, got %v", err)
+	}
+}
+
+func asValidationError(err error, target **ValidationError) bool {
+	ve, ok := err.(*ValidationError)
+	if ok {
+		*target = ve
+	}
+	return ok
+}
+
+// A manifest must not be able to set headers the transport owns; smuggling a
+// Host or Transfer-Encoding header is a request-splitting primitive.
+func TestForbiddenHeadersAreRejected(t *testing.T) {
+	src := strings.Replace(minimalManifest,
+		"        query:\n          limit: \"{{input.limit|default:10}}\"",
+		"        headers:\n          Host: evil.example.com",
+		1)
+	_, err := compileString(t, src)
+	if err == nil || !strings.Contains(err.Error(), "controlled by the platform") {
+		t.Fatalf("got %v, want a forbidden-header error", err)
+	}
+}
+
+// A schema that points at a remote document would make the import step perform
+// an outbound fetch to an attacker-chosen URL.
+func TestRemoteSchemaReferencesAreRefused(t *testing.T) {
+	src := strings.Replace(minimalManifest,
+		"          thingId: {type: string}",
+		"          thingId: {$ref: 'https://evil.example.com/schema.json'}",
+		1)
+	_, err := compileString(t, src)
+	if err == nil || !strings.Contains(err.Error(), "not permitted") {
+		t.Fatalf("got %v, want a refusal to load a remote schema", err)
+	}
+}
+
+func TestBodyValidation(t *testing.T) {
+	withBody := func(body string) string {
+		s := strings.Replace(minimalManifest, "method: GET", "method: POST", 1)
+		return strings.Replace(s,
+			"        query:\n          limit: \"{{input.limit|default:10}}\"",
+			body, 1)
+	}
+	// Exactly one of json/from/text.
+	if _, err := compileString(t, withBody("        body:\n          json: {a: \"1\"}\n          text: \"x\"")); err == nil {
+		t.Fatal("ambiguous body accepted")
+	}
+	// An explicitly empty object is a legitimate body for APIs that require
+	// one, and is distinguishable from an omitted body.
+	if _, err := compileString(t, withBody("        body:\n          json: {}")); err != nil {
+		t.Fatalf("explicit empty json body rejected: %v", err)
+	}
+	if _, err := compileString(t, withBody("        body:\n          contentType: application/json")); err == nil {
+		t.Fatal("body with no content accepted")
+	}
+	// A body on GET is a manifest bug.
+	src := strings.Replace(minimalManifest,
+		"        query:\n          limit: \"{{input.limit|default:10}}\"",
+		"        body:\n          text: \"hello\"", 1)
+	if _, err := compileString(t, src); err == nil {
+		t.Fatal("body on a GET request accepted")
+	}
+}
+
+func TestVariableValidation(t *testing.T) {
+	c := mustCompile(t, minimalManifest)
+
+	if err := c.ValidateVariables(map[string]string{"accountId": "123"}); err != nil {
+		t.Fatalf("valid variables rejected: %v", err)
+	}
+	if err := c.ValidateVariables(map[string]string{"accountId": "not-a-number"}); err == nil {
+		t.Fatal("pattern violation accepted")
+	}
+	if err := c.ValidateVariables(map[string]string{"unknown": "x"}); err == nil {
+		t.Fatal("unknown variable accepted")
+	}
+
+	resolved := c.ResolveVariables(nil)
+	if resolved["accountId"] != "42" {
+		t.Fatalf("default not applied: %v", resolved)
+	}
+	resolved = c.ResolveVariables(map[string]string{"accountId": "7"})
+	if resolved["accountId"] != "7" {
+		t.Fatalf("override not applied: %v", resolved)
+	}
+}
+
+func TestRequiredVariableEnforcement(t *testing.T) {
+	src := strings.Replace(minimalManifest,
+		"    - name: accountId\n      default: \"42\"\n      pattern: '^[0-9]+$'",
+		"    - name: accountId\n      required: true\n      pattern: '^[0-9]+$'", 1)
+	c := mustCompile(t, src)
+	if err := c.ValidateVariables(nil); err == nil {
+		t.Fatal("missing required variable accepted")
+	}
+	if err := c.ValidateVariables(map[string]string{"accountId": "9"}); err != nil {
+		t.Fatalf("supplied required variable rejected: %v", err)
+	}
+}
+
+func TestSecretValidation(t *testing.T) {
+	c := mustCompile(t, minimalManifest)
+	if err := c.ValidateSecretNames([]string{"apiKey"}); err != nil {
+		t.Fatalf("declared secret rejected: %v", err)
+	}
+	if err := c.ValidateSecretNames([]string{"apiKey", "sneaky"}); err == nil {
+		t.Fatal("undeclared secret accepted")
+	}
+	if missing := c.MissingRequiredSecrets(nil); len(missing) != 1 || missing[0] != "apiKey" {
+		t.Fatalf("MissingRequiredSecrets = %v", missing)
+	}
+	if missing := c.MissingRequiredSecrets(map[string][]byte{"apiKey": {1}}); len(missing) != 0 {
+		t.Fatalf("MissingRequiredSecrets = %v, want none", missing)
+	}
+}
+
+func TestValidateBaseURL(t *testing.T) {
+	good := []string{"http://localhost:23119", "https://api.zotero.org", "http://host.docker.internal:23119/base"}
+	for _, u := range good {
+		if err := ValidateBaseURL(u); err != nil {
+			t.Errorf("ValidateBaseURL(%q) = %v", u, err)
+		}
+	}
+	bad := []string{"", "file:///etc/passwd", "https://", "https://x/?a=b", "https://x#frag", "not a url"}
+	for _, u := range bad {
+		if err := ValidateBaseURL(u); err == nil {
+			t.Errorf("ValidateBaseURL(%q) accepted", u)
+		}
+	}
+}
+
+func TestRegistryPutGetList(t *testing.T) {
+	r := NewRegistry()
+	recs, err := Builtins()
+	if err != nil {
+		t.Fatalf("Builtins: %v", err)
+	}
+	for _, rec := range recs {
+		if _, err := r.Put(rec); err != nil {
+			t.Fatalf("Put(%s): %v", rec.ID, err)
+		}
+	}
+	if r.Len() != len(recs) {
+		t.Fatalf("Len = %d, want %d", r.Len(), len(recs))
+	}
+	if _, ok := r.Get("zotero-local"); !ok {
+		t.Fatal("Get(zotero-local) failed")
+	}
+	if got := r.List(); len(got) != len(recs) {
+		t.Fatalf("List returned %d entries", len(got))
+	}
+	r.Remove("zotero-local")
+	if _, ok := r.Get("zotero-local"); ok {
+		t.Fatal("Remove did not evict the entry")
+	}
+}
+
+// The record ID is what the URL and every foreign key use; a manifest stored
+// under a different ID than it declares would be served under a false name.
+func TestRegistryRejectsIDMismatch(t *testing.T) {
+	recs, _ := Builtins()
+	rec := *recs[0]
+	rec.ID = "something-else"
+	if _, err := NewRegistry().Put(&rec); err == nil {
+		t.Fatal("record/manifest id mismatch accepted")
+	}
+}
+
+func TestManifestMarshalRoundTrip(t *testing.T) {
+	m, err := ParseManifest([]byte(minimalManifest))
+	if err != nil {
+		t.Fatalf("ParseManifest: %v", err)
+	}
+	out, err := m.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	again, err := ParseManifest(out)
+	if err != nil {
+		t.Fatalf("re-parsing a marshalled manifest: %v", err)
+	}
+	if again.Metadata.ID != m.Metadata.ID || len(again.Spec.Tools) != len(m.Spec.Tools) {
+		t.Fatal("manifest did not survive a marshal/parse round trip")
+	}
+	if _, err := Compile(again); err != nil {
+		t.Fatalf("round-tripped manifest no longer compiles: %v", err)
+	}
+}

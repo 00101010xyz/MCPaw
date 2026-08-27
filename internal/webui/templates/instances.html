@@ -1,0 +1,47 @@
+{{define "content"}}
+{{$d := .Data}}
+<div class="page-head">
+  <div>
+    <h1>Instances</h1>
+    <p class="lede">Each instance is one connector pointed at one API, served at its own MCP endpoint.</p>
+  </div>
+  <div class="page-head__actions">
+    <a class="btn btn--primary" href="/instances/new">New instance</a>
+  </div>
+</div>
+
+{{if not $d.Instances}}
+<div class="panel empty">
+  <h2>Nothing configured yet</h2>
+  <p>
+    Start with the built-in Zotero connector to expose your local library over MCP,
+    or import a manifest for any HTTP API you already run.
+  </p>
+  <a class="btn btn--primary" href="/instances/new">Create the first instance</a>
+</div>
+{{else}}
+<div class="catalogue">
+  {{range $d.Instances}}
+  <article class="panel">
+    <div class="panel__head">
+      <p class="card-title"><a href="/instances/{{.Instance.ID}}">{{.Instance.Name}}</a></p>
+      {{if .Instance.Enabled}}
+        {{if .Ready}}<span class="tag tag--ok">serving</span>
+        {{else}}<span class="tag tag--warn">blocked</span>{{end}}
+      {{else}}<span class="tag tag--off">disabled</span>{{end}}
+    </div>
+    <p class="meta">{{.ConnectorName}}</p>
+    <dl class="facts">
+      <dt>Endpoint</dt><dd><code>/mcp/{{.Instance.Slug}}</code></dd>
+      <dt>Upstream</dt><dd><code>{{.Instance.BaseURL}}</code></dd>
+      <dt>Tools</dt><dd>{{.EnabledTools}} of {{.ToolCount}} enabled</dd>
+    </dl>
+    {{if .Instance.AllowPrivateNetwork}}
+      <p class="note note--warn">Private-network egress is open on this instance.</p>
+    {{end}}
+    {{if .Problem}}<p class="note note--error">{{.Problem}}</p>{{end}}
+  </article>
+  {{end}}
+</div>
+{{end}}
+{{end}}

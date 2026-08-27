@@ -1,0 +1,18 @@
+# Build output
+/mcpaw
+/bin/
+
+# Runtime data — the SQLite database and, absent an explicit MCPAW_MASTER_KEY,
+# the generated master key file. Never commit either.
+*.db
+*.db-wal
+*.db-shm
+data/
+master.key
+
+# Go
+*.test
+*.out
+
+# Editor/OS cruft
+.DS_Store

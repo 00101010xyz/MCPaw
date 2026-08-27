@@ -1,0 +1,133 @@
+{{define "layout"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light dark">
+<title>{{.Title}} · MCPaw</title>
+<link rel="stylesheet" href="/static/app.css">
+<link rel="icon" href="/static/mark.svg" type="image/svg+xml">
+</head>
+<body>
+{{if .User}}
+<header class="bar">
+  <a class="brand" href="/">{{template "mark" .}}MCPaw</a>
+
+  <nav class="bar__nav" aria-label="Sections">
+    <a class="bar__link" href="/"{{if eq .Nav "instances"}} aria-current="page"{{end}}>Instances</a>
+    <a class="bar__link" href="/connectors"{{if eq .Nav "connectors"}} aria-current="page"{{end}}>Connectors</a>
+    <a class="bar__link" href="/tokens"{{if eq .Nav "tokens"}} aria-current="page"{{end}}>Tokens</a>
+    <a class="bar__link" href="/audit"{{if eq .Nav "audit"}} aria-current="page"{{end}}>Audit</a>
+  </nav>
+
+  <span class="bar__spacer"></span>
+
+  <button type="button" class="searchpill" id="searchpill"
+          aria-label="Search and jump to anything" aria-expanded="false" aria-controls="cmdk">
+    {{template "icon-search" .}}
+    <span class="searchpill__text">Jump to…</span>
+    <span><kbd>⌘</kbd><kbd>K</kbd></span>
+  </button>
+
+  <div class="bar__right">
+    <a class="bar__who" href="/account"{{if eq .Nav "account"}} aria-current="page"{{end}}>{{.User.Email}}</a>
+    <form method="post" action="/logout" class="inline">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <button type="submit" class="linkbtn">Sign out</button>
+    </form>
+  </div>
+</header>
+{{end}}
+
+<main{{if not .User}} class="solo"{{end}}>
+  {{template "flash" .Flash}}
+  {{template "content" .}}
+</main>
+
+<footer class="foot">
+  <p>MCPaw {{.Version}} — MCP endpoints for ordinary HTTP APIs</p>
+</footer>
+
+{{if .User}}
+<div class="cmdk" id="cmdk" aria-hidden="true">
+  <div class="cmdk__backdrop" data-cmdk-close></div>
+  <div class="cmdk__panel" data-cmdk-panel role="dialog" aria-modal="true" aria-label="Jump to">
+    <div class="cmdk__field">
+      {{template "icon-search" .}}
+      <label class="visually-hidden" for="cmdk-input">Search instances and sections</label>
+      <input id="cmdk-input" data-cmdk-input type="text" autocomplete="off" spellcheck="false"
+             placeholder="Search instances and sections…" role="combobox"
+             aria-expanded="true" aria-controls="cmdk-list">
+      <kbd>esc</kbd>
+    </div>
+
+    <div class="cmdk__list" id="cmdk-list" data-cmdk-list role="listbox" aria-label="Results">
+      {{range .Palette}}
+        {{if .First}}<p class="cmdk__group" data-cmdk-group="{{.Group}}">{{.Group}}</p>{{end}}
+        <a class="cmdk__item" data-cmdk-item data-group="{{.Group}}" data-search="{{.Search}}"
+           role="option" href="{{.Href}}">
+          <span>{{.Label}}</span>
+          <span>{{.Hint}}</span>
+        </a>
+      {{end}}
+      <p class="cmdk__empty" data-cmdk-empty hidden>No match.</p>
+    </div>
+
+    <div class="cmdk__foot">
+      <span><kbd>↑</kbd><kbd>↓</kbd> move</span>
+      <span><kbd>↵</kbd> open</span>
+      <span><kbd>esc</kbd> close</span>
+    </div>
+  </div>
+</div>
+<script src="/static/app.js" defer></script>
+{{end}}
+</body>
+</html>{{end}}
+
+{{/* The wordmark glyph. Hand-drawn rather than an emoji or an icon-library
+     import: it is the only mark in the interface and it should belong to the
+     typographic system, not be rendered by whatever font the OS supplies. */}}
+{{define "mark"}}<svg class="brand__mark" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false">
+  <ellipse cx="12" cy="16.4" rx="5.4" ry="4.3"/>
+  <ellipse cx="6.1" cy="10.6" rx="2.25" ry="2.9" transform="rotate(-22 6.1 10.6)"/>
+  <ellipse cx="10.1" cy="7.4" rx="2.1" ry="3"/>
+  <ellipse cx="14.6" cy="7.6" rx="2.1" ry="3" transform="rotate(9 14.6 7.6)"/>
+  <ellipse cx="18.5" cy="11.1" rx="2.2" ry="2.8" transform="rotate(24 18.5 11.1)"/>
+</svg>{{end}}
+
+{{define "icon-search"}}<svg class="cmdk__ico searchpill__ico" viewBox="0 0 16 16" fill="none"
+     stroke="currentColor" stroke-width="1.6" aria-hidden="true" focusable="false">
+  <circle cx="7" cy="7" r="4.5"/>
+  <path d="M10.5 10.5 14 14" stroke-linecap="round"/>
+</svg>{{end}}
+
+{{define "flash"}}
+{{if .}}
+<div class="flash flash--{{.Level}}" role="status">
+  <p class="flash__msg">{{.Message}}</p>
+  {{if .Details}}<ul>{{range .Details}}<li>{{.}}</li>{{end}}</ul>{{end}}
+  {{if .Secret}}
+  <p class="reveal-warn">Copy it now — it cannot be recovered.</p>
+  <div class="graphite">
+    <p class="graphite__label"><span>bearer token</span><span>shown once</span></p>
+    <code class="graphite__body">{{.Secret}}</code>
+  </div>
+  {{end}}
+  {{if .Test}}
+  <div class="result">
+    <p>Tool <code>{{.Test.Tool}}</code>{{if .Test.StatusCode}} — HTTP {{.Test.StatusCode}}{{end}} in {{.Test.DurationMS}} ms</p>
+    <p>{{.Test.Message}}</p>
+    {{if .Test.Hint}}<p>{{.Test.Hint}}</p>{{end}}
+    {{if .Test.Preview}}
+    <div class="graphite">
+      <p class="graphite__label"><span>response</span><span>excerpt</span></p>
+      <pre>{{.Test.Preview}}</pre>
+    </div>
+    {{end}}
+  </div>
+  {{end}}
+</div>
+{{end}}
+{{end}}

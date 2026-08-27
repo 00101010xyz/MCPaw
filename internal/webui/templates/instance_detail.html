@@ -1,0 +1,207 @@
+{{define "content"}}
+{{$d := .Data}}
+{{$csrf := .CSRF}}
+{{$inst := $d.Detail.Instance}}
+
+<div class="page-head">
+  <div>
+    <h1>{{$inst.Name}}</h1>
+    <p class="meta">{{$d.Detail.ConnectorName}} — created {{formatTime $inst.CreatedAt}}</p>
+  </div>
+  <div class="page-head__actions">
+    {{if $inst.Enabled}}
+      {{if $d.Detail.Ready}}<span class="tag tag--ok">serving</span>
+      {{else}}<span class="tag tag--warn">blocked</span>{{end}}
+    {{else}}<span class="tag tag--off">disabled</span>{{end}}
+  </div>
+</div>
+
+{{if $d.Detail.Problem}}<p class="note note--error">{{$d.Detail.Problem}}</p>{{end}}
+
+<section class="panel panel--tight">
+  <div class="panel__head"><h2>Endpoint</h2></div>
+  <p class="lede">Point an MCP client here and authenticate with a bearer token.</p>
+  <div class="graphite">
+    <p class="graphite__label"><span>mcp streamable http</span><span>bearer auth</span></p>
+    <code class="graphite__body">{{.PublicURL}}/mcp/{{$inst.Slug}}</code>
+  </div>
+  <div class="actions">
+    <form method="post" action="/instances/{{$inst.ID}}/test" class="inline">
+      <input type="hidden" name="csrf_token" value="{{$csrf}}">
+      <button type="submit" class="btn">Test connection</button>
+    </form>
+    <a class="btn" href="/tokens?instance={{$inst.ID}}">Issue a token</a>
+  </div>
+</section>
+
+<section class="panel panel--roomy">
+  <div class="panel__head"><h2>Configuration</h2></div>
+  <form method="post" action="/instances/{{$inst.ID}}">
+    <input type="hidden" name="csrf_token" value="{{$csrf}}">
+
+    <label for="name">Display name</label>
+    <input id="name" name="name" type="text" value="{{$inst.Name}}" required maxlength="120">
+
+    <label for="description">Description</label>
+    <input id="description" name="description" type="text" value="{{$inst.Description}}" maxlength="300">
+
+    <label for="base_url">Upstream base URL</label>
+    <input id="base_url" name="base_url" type="url" value="{{$inst.BaseURL}}" required>
+
+    {{range $d.Detail.Variables}}
+    <label for="var_{{.Def.Name}}">{{.Def.Name}}{{if .Def.Required}} <span class="req">*</span>{{end}}</label>
+    <input id="var_{{.Def.Name}}" name="var_{{.Def.Name}}" type="text"
+           value="{{.Value}}" placeholder="{{.Def.Default}}"
+           {{if .Def.Pattern}}pattern="{{.Def.Pattern}}"{{end}}>
+    <p class="hint">{{.Def.Description}}{{if .Def.Default}} Default <code>{{.Def.Default}}</code>.{{end}}</p>
+    {{end}}
+
+    <fieldset>
+      <legend>Limits</legend>
+      <div class="field-row">
+        <div>
+          <label for="timeout_ms">Request timeout — ms</label>
+          <input id="timeout_ms" name="timeout_ms" type="number" min="500" max="120000" value="{{$inst.TimeoutMS}}">
+        </div>
+        <div>
+          <label for="rate_limit_per_min">Rate limit — per minute</label>
+          <input id="rate_limit_per_min" name="rate_limit_per_min" type="number" min="0" value="{{$inst.RateLimitPerMin}}">
+        </div>
+        <div>
+          <label for="max_concurrent">Concurrent calls</label>
+          <input id="max_concurrent" name="max_concurrent" type="number" min="1" max="64" value="{{$inst.MaxConcurrent}}">
+        </div>
+        <div>
+          <label for="max_response_bytes">Max response — bytes</label>
+          <input id="max_response_bytes" name="max_response_bytes" type="number" min="1024" value="{{$inst.MaxResponseBytes}}">
+        </div>
+      </div>
+      <p class="hint">
+        A rate limit of 0 disables throttling. Worst-case memory for this instance is
+        roughly concurrent calls × max response size.
+      </p>
+    </fieldset>
+
+    <fieldset>
+      <legend>Egress</legend>
+      <label class="check">
+        <input type="checkbox" name="allow_private_network" {{if $inst.AllowPrivateNetwork}}checked{{end}}>
+        Allow requests to loopback and private-network addresses
+      </label>
+      <p class="hint">
+        Required when the API runs on this machine or your LAN — the Zotero desktop app
+        included. Cloud instance-metadata addresses stay blocked regardless.
+      </p>
+    </fieldset>
+
+    <label class="check">
+      <input type="checkbox" name="enabled" {{if $inst.Enabled}}checked{{end}}>
+      Serve this endpoint
+    </label>
+
+    <button type="submit" class="btn btn--primary btn--submit">Save configuration</button>
+  </form>
+</section>
+
+{{if $d.Detail.Secrets}}
+<section class="panel panel--tight">
+  <div class="panel__head"><h2>Credentials</h2></div>
+  <p class="lede">
+    Values are encrypted before storage and never displayed again — not here, not in
+    the logs, not anywhere.
+  </p>
+  <div class="table-wrap">
+    <table class="table-stack">
+      <thead><tr><th>Name</th><th>State</th><th>Set value</th></tr></thead>
+      <tbody>
+      {{range $d.Detail.Secrets}}
+        <tr>
+          <td data-label="Name">
+            <code>{{.Def.Name}}</code>{{if .Def.Required}} <span class="req">*</span>{{end}}
+            {{if .Def.Description}}<p class="hint">{{.Def.Description}}</p>{{end}}
+          </td>
+          <td data-label="State">
+            {{if .Set}}<span class="tag tag--ok">set</span>{{else}}<span class="tag tag--off">empty</span>{{end}}
+          </td>
+          <td data-label="Set value">
+            <form method="post" action="/instances/{{$inst.ID}}/secrets" class="secret-set">
+              <input type="hidden" name="csrf_token" value="{{$csrf}}">
+              <input type="hidden" name="name" value="{{.Def.Name}}">
+              <label class="visually-hidden" for="secret-{{.Def.Name}}">New value for {{.Def.Name}}</label>
+              <input id="secret-{{.Def.Name}}" type="password" name="value" autocomplete="new-password" placeholder="New value">
+              <button type="submit" class="btn btn--sm">Save</button>
+            </form>
+            {{if .Set}}
+            <form method="post" action="/instances/{{$inst.ID}}/secrets/delete" class="inline">
+              <input type="hidden" name="csrf_token" value="{{$csrf}}">
+              <input type="hidden" name="name" value="{{.Def.Name}}">
+              <button type="submit" class="linkbtn linkbtn--danger">Remove</button>
+            </form>
+            {{end}}
+          </td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  </div>
+</section>
+{{end}}
+
+<section class="panel panel--tight">
+  <div class="panel__head"><h2>Tools</h2></div>
+  <p class="lede">
+    Only enabled tools are advertised. A disabled tool is indistinguishable from one
+    that does not exist.
+  </p>
+  <div class="table-wrap">
+    <table class="table-stack">
+      <thead><tr><th>Tool</th><th>Method</th><th>Behaviour</th><th>State</th></tr></thead>
+      <tbody>
+      {{range $d.Detail.Tools}}
+        <tr>
+          <td data-label="Tool">
+            <code>{{.Tool.Def.Name}}</code>
+            <p class="hint">{{.Tool.Def.Description}}</p>
+          </td>
+          <td data-label="Method">
+            <span class="verb verb--{{lower .Tool.Def.Request.Method}}">{{.Tool.Def.Request.Method}}</span>
+          </td>
+          <td data-label="Behaviour">
+            {{if .Tool.Def.Annotations}}
+              {{if boolPtr .Tool.Def.Annotations.ReadOnlyHint}}<span class="tag tag--info">read only</span>{{end}}
+              {{if boolPtr .Tool.Def.Annotations.DestructiveHint}}<span class="tag tag--warn">destructive</span>{{end}}
+            {{end}}
+          </td>
+          <td data-label="State">
+            <form method="post" action="/instances/{{$inst.ID}}/tools" class="inline">
+              <input type="hidden" name="csrf_token" value="{{$csrf}}">
+              <input type="hidden" name="tool" value="{{.Tool.Def.Name}}">
+              <input type="hidden" name="enabled" value="{{if .Enabled}}false{{else}}true{{end}}">
+              <button type="submit" class="btn switch{{if .Enabled}} switch--on{{end}}">
+                {{if .Enabled}}enabled{{else}}disabled{{end}}
+              </button>
+            </form>
+          </td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel panel--danger">
+  <h2>Delete instance</h2>
+  <p class="lede">
+    This destroys the endpoint, its stored credentials and every token scoped to it.
+    Type the slug <code>{{$inst.Slug}}</code> to confirm.
+  </p>
+  <form method="post" action="/instances/{{$inst.ID}}/delete">
+    <input type="hidden" name="csrf_token" value="{{$csrf}}">
+    <div class="actions">
+      <label class="visually-hidden" for="confirm-slug">Confirm the slug</label>
+      <input id="confirm-slug" name="confirm_slug" type="text" placeholder="{{$inst.Slug}}" required>
+      <button type="submit" class="btn btn--danger">Delete permanently</button>
+    </div>
+  </form>
+</section>
+{{end}}

@@ -1,0 +1,13 @@
+[
+  {
+    "date": "2026-08-26",
+    "scope": "app",
+    "macrostructure": "Catalogue + Workbench (design.md families)",
+    "theme": "Cobalt",
+    "theme_axes": "cool-light / grotesk-sans / electric-cobalt",
+    "nav": "N13 inline ⌘K pill",
+    "footer": "Ft2 inline single line",
+    "enrichment": "none",
+    "brief": "MCPaw — admin console for an API-to-MCP gateway; server-rendered Go templates under a strict CSP"
+  }
+]

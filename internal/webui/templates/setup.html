@@ -1,0 +1,23 @@
+{{define "content"}}
+<div class="panel panel--roomy">
+  <h1>First administrator</h1>
+  <p class="lede">
+    MCPaw has no accounts yet. This form is reachable only until the first
+    administrator exists, then it is closed permanently.
+  </p>
+  <form method="post" action="/setup">
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" autocomplete="username" required autofocus>
+
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="new-password"
+           minlength="12" required aria-describedby="pw-help">
+    <p id="pw-help" class="hint">At least 12 characters. Length beats punctuation.</p>
+
+    <label for="password_confirm">Confirm password</label>
+    <input id="password_confirm" name="password_confirm" type="password" autocomplete="new-password" required>
+
+    <button type="submit" class="btn btn--primary btn--submit btn--block">Create administrator</button>
+  </form>
+</div>
+{{end}}

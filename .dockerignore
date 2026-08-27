@@ -1,0 +1,7 @@
+.git
+.hallmark
+docs
+*.md
+.dockerignore
+Dockerfile
+docker-compose.yml

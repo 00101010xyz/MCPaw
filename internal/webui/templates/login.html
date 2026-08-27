@@ -1,0 +1,15 @@
+{{define "content"}}
+<div class="panel panel--roomy">
+  <h1>Sign in</h1>
+  <p class="lede">MCPaw admin console.</p>
+  <form method="post" action="/login">
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" autocomplete="username" required autofocus>
+
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required>
+
+    <button type="submit" class="btn btn--primary btn--submit btn--block">Sign in</button>
+  </form>
+</div>
+{{end}}

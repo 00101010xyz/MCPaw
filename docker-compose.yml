@@ -1,0 +1,41 @@
+services:
+  mcpaw:
+    build:
+      context: .
+      args:
+        # Overridden by CI to stamp a real version; irrelevant for local use.
+        VERSION: dev
+    image: mcpaw:local
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - mcpaw-data:/data
+    environment:
+      # Uncomment and set to a value from `docker compose run --rm mcpaw keygen`
+      # to pin the master key explicitly instead of letting MCPaw generate and
+      # persist one under /data on first boot. Losing a generated key makes
+      # every stored credential unrecoverable, so pinning it in your own
+      # secret store is the recommended path for anything beyond local trial.
+      # MCPAW_MASTER_KEY: ""
+
+      # The externally reachable URL, used to render the /mcp/<slug> endpoint
+      # shown in the UI. Set this once you know how clients will reach you.
+      MCPAW_PUBLIC_URL: "http://localhost:8080"
+
+      MCPAW_LOG_LEVEL: "info"
+      MCPAW_LOG_FORMAT: "json"
+
+      # Only enable this if a reverse proxy you trust sits in front of MCPaw —
+      # otherwise a client can spoof its own address in the audit log.
+      MCPAW_TRUST_PROXY_HEADERS: "false"
+    extra_hosts:
+      # host.docker.internal is what the built-in Zotero connector's default
+      # base URL points at (Zotero's local API only listens on the host's
+      # loopback, which is not the container's loopback). Docker Desktop on
+      # macOS/Windows resolves this automatically; on Linux the daemon needs
+      # this explicit mapping.
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  mcpaw-data:

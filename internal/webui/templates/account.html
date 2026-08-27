@@ -1,0 +1,44 @@
+{{define "content"}}
+{{$d := .Data}}
+<div class="page-head"><h1>Account</h1></div>
+
+<section class="panel panel--roomy">
+  <h2>Change password</h2>
+  <p class="lede">Changing your password signs out every other session you have open.</p>
+  <form method="post" action="/account/password">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <label for="current">Current password</label>
+    <input id="current" name="current_password" type="password" autocomplete="current-password" required>
+
+    <label for="next">New password</label>
+    <input id="next" name="new_password" type="password" autocomplete="new-password" minlength="12" required>
+
+    <label for="confirm">Confirm new password</label>
+    <input id="confirm" name="confirm_password" type="password" autocomplete="new-password" required>
+
+    <button type="submit" class="btn btn--primary btn--submit">Change password</button>
+  </form>
+</section>
+
+<section class="panel panel--tight">
+  <div class="panel__head"><h2>Accounts</h2></div>
+  <div class="table-wrap">
+    <table class="table-stack">
+      <thead><tr><th>Email</th><th>Role</th><th>Status</th><th>Last sign-in</th></tr></thead>
+      <tbody>
+      {{range $d.Users}}
+        <tr>
+          <td data-label="Email">{{.Email}}</td>
+          <td data-label="Role"><span class="mono">{{.Role}}</span></td>
+          <td data-label="Status">
+            {{if .Disabled}}<span class="tag tag--off">disabled</span>
+            {{else}}<span class="tag tag--ok">active</span>{{end}}
+          </td>
+          <td data-label="Last sign-in" class="muted nowrap">{{formatTimePtr .LastLoginAt}}</td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  </div>
+</section>
+{{end}}

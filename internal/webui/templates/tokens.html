@@ -1,0 +1,82 @@
+{{define "content"}}
+{{$d := .Data}}
+{{$csrf := .CSRF}}
+<div class="page-head">
+  <div>
+    <h1>Access tokens</h1>
+    <p class="lede">
+      MCP clients authenticate with a bearer token. Only a keyed digest is stored, so
+      a token cannot be recovered after it is issued — only replaced.
+    </p>
+  </div>
+</div>
+
+<section class="panel panel--roomy">
+  <div class="panel__head"><h2>Issue a token</h2></div>
+  <form method="post" action="/tokens">
+    <input type="hidden" name="csrf_token" value="{{$csrf}}">
+    <label for="token_name">Label</label>
+    <input id="token_name" name="name" type="text" required maxlength="128"
+           placeholder="Claude Desktop on the work laptop">
+
+    <div class="field-row">
+      <div>
+        <label for="instance_id">Scope</label>
+        <select id="instance_id" name="instance_id">
+          <option value="">Every instance — broad</option>
+          {{range $d.Instances}}
+            <option value="{{.Instance.ID}}"{{if eq .Instance.ID $d.SelectedInstance}} selected{{end}}>{{.Instance.Name}} — /mcp/{{.Instance.Slug}}</option>
+          {{end}}
+        </select>
+        <p class="hint">Prefer a single instance. A token scoped to one endpoint cannot reach the others.</p>
+      </div>
+      <div>
+        <label for="ttl_days">Expires</label>
+        <select id="ttl_days" name="ttl_days">
+          <option value="30">In 30 days</option>
+          <option value="90" selected>In 90 days</option>
+          <option value="365">In a year</option>
+          <option value="0">Never</option>
+        </select>
+      </div>
+    </div>
+
+    <button type="submit" class="btn btn--primary btn--submit">Issue token</button>
+  </form>
+</section>
+
+<section class="panel panel--tight">
+  <div class="panel__head"><h2>Issued</h2></div>
+  {{if not $d.Tokens}}
+  <p class="muted">No tokens yet.</p>
+  {{else}}
+  <div class="table-wrap">
+    <table class="table-stack">
+      <thead>
+        <tr><th>Label</th><th>Prefix</th><th>Scope</th><th>Created</th><th>Expires</th><th>Last used</th><th></th></tr>
+      </thead>
+      <tbody>
+      {{range $d.Tokens}}
+        <tr{{if .Revoked}} class="row-off"{{end}}>
+          <td data-label="Label">{{.Token.Name}}{{if .Revoked}} <span class="tag tag--off">revoked</span>{{end}}</td>
+          <td data-label="Prefix"><code>{{.Token.Prefix}}…</code></td>
+          <td data-label="Scope">{{.ScopeLabel}}</td>
+          <td data-label="Created" class="muted nowrap">{{formatTime .Token.CreatedAt}}</td>
+          <td data-label="Expires" class="muted nowrap">{{formatTimePtr .Token.ExpiresAt}}</td>
+          <td data-label="Last used" class="muted nowrap">{{formatTimePtr .Token.LastUsedAt}}</td>
+          <td data-label="">
+            {{if not .Revoked}}
+            <form method="post" action="/tokens/{{.Token.ID}}/revoke" class="inline">
+              <input type="hidden" name="csrf_token" value="{{$csrf}}">
+              <button type="submit" class="linkbtn linkbtn--danger">Revoke</button>
+            </form>
+            {{end}}
+          </td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{end}}
+</section>
+{{end}}

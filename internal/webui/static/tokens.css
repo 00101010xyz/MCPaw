@@ -1,0 +1,165 @@
+/* Hallmark · design-system: design.md · theme: Cobalt · genre: modern-minimal
+ * Token block. Every colour and every font-family in app.css references a name
+ * from here — no inline OKLCH, no stray hex, no bypassed font declaration.
+ */
+
+@font-face {
+  font-family: "Space Grotesk";
+  src: url("/static/fonts/spacegrotesk-var.woff2") format("woff2-variations");
+  font-weight: 300 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Inter";
+  src: url("/static/fonts/inter-var.woff2") format("woff2-variations");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/static/fonts/jetbrainsmono-var.woff2") format("woff2-variations");
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  /* ---- Type ------------------------------------------------------------ */
+  --font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-body: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Major third (1.25) anchored at a 15px body. */
+  --text-2xs: 0.6875rem;
+  --text-xs: 0.75rem;
+  --text-sm: 0.8125rem;
+  --text-md: 0.9375rem;
+  --text-lg: 1.0625rem;
+  --text-xl: 1.3125rem;
+  --text-2xl: 1.625rem;
+  --text-3xl: 2.0625rem;
+
+  --tracking-display: -0.02em;
+  --tracking-meta: 0.06em;
+
+  /* ---- Space (4pt scale, named by role) -------------------------------- */
+  --space-3xs: 0.125rem;
+  --space-2xs: 0.25rem;
+  --space-xs: 0.5rem;
+  --space-sm: 0.75rem;
+  --space-md: 1rem;
+  --space-lg: 1.5rem;
+  --space-xl: 2.5rem;
+  --space-2xl: 4rem;
+  --space-3xl: 6rem;
+
+  /* ---- Radii — drawn with a ruler, not softened ------------------------- */
+  --radius-control: 6px;
+  --radius-panel: 10px;
+  --radius-round: 999px;
+
+  --rule: 1px;
+
+  /* ---- Motion ---------------------------------------------------------- */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-instant: 90ms;
+  --dur-short: 180ms;
+  --dur-medium: 240ms;
+
+  /* ---- Elevation (six named levels — never freestyle a z-index) --------- */
+  --z-base: 1;
+  --z-raised: 10;
+  --z-dropdown: 100;
+  --z-sticky: 200;
+  --z-modal: 400;
+  --z-toast: 500;
+
+  --lift: 0 1px 2px oklch(24% 0.02 258 / 0.06);
+  --lift-panel: 0 18px 48px -24px oklch(24% 0.02 258 / 0.28);
+
+  /* ---- Colour · light -------------------------------------------------- *
+   * Cool engineered near-white. No pure #fff, no pure #000, no flat grey —
+   * every neutral carries the anchor's chroma so the page reads as one
+   * temperature.
+   */
+  --color-paper: oklch(98.5% 0.004 250);
+  --color-paper-2: oklch(96.4% 0.005 252);
+  --color-paper-3: oklch(93.8% 0.006 252);
+
+  --color-rule: oklch(89% 0.008 252);
+  --color-rule-2: oklch(80% 0.01 252);
+
+  --color-muted: oklch(52% 0.016 256);
+  --color-ink-2: oklch(34% 0.018 257);
+  --color-ink: oklch(24% 0.02 258);
+
+  --color-accent: oklch(50% 0.2 256);
+  --color-accent-hover: oklch(43% 0.19 256);
+  --color-accent-ink: oklch(99% 0.004 250);
+  --color-accent-wash: oklch(95.5% 0.028 256);
+  --color-focus: oklch(50% 0.2 256);
+
+  /* Graphite is the machine-facing surface: endpoints, token reveals,
+   * response previews, the command palette. It is not decoration. */
+  --color-graphite: oklch(22% 0.016 260);
+  --color-graphite-2: oklch(27% 0.016 260);
+  --color-graphite-rule: oklch(34% 0.016 260);
+  --color-graphite-ink: oklch(92% 0.01 256);
+  --color-graphite-muted: oklch(68% 0.014 256);
+
+  --color-ok: oklch(46% 0.11 150);
+  --color-ok-wash: oklch(95% 0.03 150);
+  --color-warn: oklch(52% 0.12 75);
+  --color-warn-wash: oklch(95.5% 0.035 80);
+  --color-danger: oklch(50% 0.17 25);
+  --color-danger-hover: oklch(44% 0.17 25);
+  --color-danger-wash: oklch(95.5% 0.028 25);
+}
+
+/* ---- Colour · dark ------------------------------------------------------ *
+ * The anchor hue never moves between modes; only lightness and chroma do.
+ * Higher surfaces are lighter, not darker. Body weight drops a step to
+ * compensate for the optical gain of light text on a dark ground.
+ */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-paper: oklch(16% 0.012 258);
+    --color-paper-2: oklch(19.5% 0.013 258);
+    --color-paper-3: oklch(23% 0.014 258);
+
+    --color-rule: oklch(29% 0.014 258);
+    --color-rule-2: oklch(38% 0.016 258);
+
+    --color-muted: oklch(68% 0.014 256);
+    --color-ink-2: oklch(86% 0.01 256);
+    --color-ink: oklch(95% 0.008 256);
+
+    --color-accent: oklch(72% 0.16 256);
+    --color-accent-hover: oklch(79% 0.14 256);
+    --color-accent-ink: oklch(16% 0.02 258);
+    --color-accent-wash: oklch(27% 0.05 256);
+    --color-focus: oklch(76% 0.15 256);
+
+    --color-graphite: oklch(13% 0.014 260);
+    --color-graphite-2: oklch(18% 0.014 260);
+    --color-graphite-rule: oklch(27% 0.014 260);
+    --color-graphite-ink: oklch(92% 0.01 256);
+    --color-graphite-muted: oklch(66% 0.014 256);
+
+    --color-ok: oklch(76% 0.13 150);
+    --color-ok-wash: oklch(26% 0.05 150);
+    --color-warn: oklch(80% 0.12 80);
+    --color-warn-wash: oklch(27% 0.05 80);
+    --color-danger: oklch(72% 0.15 25);
+    --color-danger-hover: oklch(79% 0.14 25);
+    --color-danger-wash: oklch(26% 0.06 25);
+
+    --lift: 0 1px 2px oklch(0% 0 0 / 0.4);
+    --lift-panel: 0 18px 48px -24px oklch(0% 0 0 / 0.7);
+  }
+}

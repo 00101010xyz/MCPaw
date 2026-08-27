@@ -1,0 +1,429 @@
+apiVersion: mcpaw.dev/v1
+kind: Connector
+metadata:
+  id: zotero-local
+  name: Zotero (Local API)
+  version: 1.0.0
+  description: >-
+    Read-only access to a Zotero library through the HTTP API that the Zotero
+    desktop application exposes on the local machine. The same manifest also
+    works against the hosted Zotero Web API by changing the base URL, the user
+    id and supplying an API key.
+  documentation: https://www.zotero.org/support/dev/web_api/v3/basics
+  tags: [research, bibliography, reference-manager, read-only]
+
+spec:
+  baseUrl:
+    # Zotero listens on 127.0.0.1 of the *host*, which is not the container's
+    # loopback address. host.docker.internal is the portable way for a
+    # container to reach its host; Linux users must map it explicitly (see the
+    # compose file). Reaching it also requires enabling private-network egress
+    # on the instance, which is a deliberate, audited decision.
+    default: http://host.docker.internal:23119
+    description: >-
+      Origin of the Zotero HTTP API. Use http://host.docker.internal:23119 for
+      the local desktop API, or https://api.zotero.org for the hosted service.
+    requiresPrivateNetwork: true
+
+  auth:
+    # The local API needs no credential. Declaring the scheme anyway means the
+    # very same connector can be pointed at api.zotero.org: when the apiKey
+    # secret is unset the header simply is not sent.
+    type: apiKey
+    in: header
+    name: Zotero-API-Key
+    value: "{{secrets.apiKey}}"
+
+  variables:
+    - name: userId
+      description: >-
+        Zotero user id. The local desktop API always uses 0; for the hosted API
+        use your numeric user id from https://www.zotero.org/settings/keys.
+      default: "0"
+      required: true
+      pattern: '^[0-9]{1,20}$'
+      example: "0"
+
+  secrets:
+    - name: apiKey
+      description: >-
+        Zotero Web API key. Leave empty for the local desktop API, which does
+        not authenticate.
+      required: false
+
+  defaults:
+    headers:
+      Zotero-API-Version: "3"
+      Accept: application/json
+    timeoutMs: 15000
+    maxResponseBytes: 4194304
+    rateLimitPerMin: 240
+    maxConcurrent: 4
+
+  tools:
+    - name: zotero_search_items
+      title: Search library items
+      description: >-
+        Search the Zotero library for items by keyword, item type or tag.
+        Returns bibliographic metadata for each match. Use qmode=everything to
+        search full text and notes as well as titles, creators and years.
+      annotations:
+        readOnlyHint: true
+        openWorldHint: false
+      inputSchema:
+        type: object
+        additionalProperties: false
+        properties:
+          query:
+            type: string
+            description: Search terms. Omit to list items without filtering.
+            maxLength: 512
+          qmode:
+            type: string
+            description: titleCreatorYear searches metadata only; everything also searches full text and notes.
+            enum: [titleCreatorYear, everything]
+          itemType:
+            type: string
+            description: >-
+              Restrict to an item type, e.g. journalArticle, book, bookSection,
+              thesis, report. Prefix with - to exclude.
+            maxLength: 64
+          tag:
+            type: string
+            description: Restrict to items carrying this tag.
+            maxLength: 128
+          sort:
+            type: string
+            enum: [dateAdded, dateModified, title, creator, itemType, date, year, publisher, publicationTitle]
+          direction:
+            type: string
+            enum: [asc, desc]
+          limit:
+            type: integer
+            description: Maximum number of items to return.
+            minimum: 1
+            maximum: 100
+          start:
+            type: integer
+            description: Zero-based offset for paging through results.
+            minimum: 0
+      request:
+        method: GET
+        path: /api/users/{{vars.userId}}/items
+        query:
+          q: "{{input.query}}"
+          qmode: "{{input.qmode}}"
+          itemType: "{{input.itemType}}"
+          tag: "{{input.tag}}"
+          sort: "{{input.sort}}"
+          direction: "{{input.direction}}"
+          limit: "{{input.limit|default:25}}"
+          start: "{{input.start}}"
+          format: json
+          include: data
+      response:
+        successCodes: [200]
+        format: json
+        includeHeaders: [Total-Results, Link, Last-Modified-Version]
+
+    - name: zotero_list_top_items
+      title: List top-level items
+      description: >-
+        List top-level items in the library, excluding child notes and
+        attachments. This is the fastest way to get an overview of a library.
+      annotations:
+        readOnlyHint: true
+        openWorldHint: false
+      inputSchema:
+        type: object
+        additionalProperties: false
+        properties:
+          limit:
+            type: integer
+            minimum: 1
+            maximum: 100
+          start:
+            type: integer
+            minimum: 0
+          sort:
+            type: string
+            enum: [dateAdded, dateModified, title, creator, itemType, date, year]
+      request:
+        method: GET
+        path: /api/users/{{vars.userId}}/items/top
+        query:
+          limit: "{{input.limit|default:25}}"
+          start: "{{input.start}}"
+          sort: "{{input.sort}}"
+          format: json
+          include: data
+      response:
+        successCodes: [200]
+        format: json
+        includeHeaders: [Total-Results, Link]
+
+    - name: zotero_get_item
+      title: Get one item
+      description: >-
+        Fetch the complete metadata of a single Zotero item by its eight
+        character item key.
+      annotations:
+        readOnlyHint: true
+        openWorldHint: false
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required: [itemKey]
+        properties:
+          itemKey:
+            type: string
+            description: Eight character Zotero item key, e.g. ABCD2345.
+            pattern: '^[A-Z0-9]{8}$'
+      request:
+        method: GET
+        path: /api/users/{{vars.userId}}/items/{{input.itemKey}}
+        query:
+          format: json
+          include: data
+      response:
+        successCodes: [200]
+        format: json
+
+    - name: zotero_get_item_children
+      title: Get item children
+      description: >-
+        List the child notes and attachments of an item. Use this to read the
+        notes attached to a paper.
+      annotations:
+        readOnlyHint: true
+        openWorldHint: false
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required: [itemKey]
+        properties:
+          itemKey:
+            type: string
+            pattern: '^[A-Z0-9]{8}$'
+          limit:
+            type: integer
+            minimum: 1
+            maximum: 100
+      request:
+        method: GET
+        path: /api/users/{{vars.userId}}/items/{{input.itemKey}}/children
+        query:
+          limit: "{{input.limit|default:50}}"
+          format: json
+          include: data
+      response:
+        successCodes: [200]
+        format: json
+        includeHeaders: [Total-Results]
+
+    - name: zotero_list_collections
+      title: List collections
+      description: >-
+        List the collections (folders) in the library, including their names,
+        keys, parent collections and item counts.
+      annotations:
+        readOnlyHint: true
+        openWorldHint: false
+      inputSchema:
+        type: object
+        additionalProperties: false
+        properties:
+          limit:
+            type: integer
+            minimum: 1
+            maximum: 100
+          start:
+            type: integer
+            minimum: 0
+      request:
+        method: GET
+        path: /api/users/{{vars.userId}}/collections
+        query:
+          limit: "{{input.limit|default:50}}"
+          start: "{{input.start}}"
+          format: json
+      response:
+        successCodes: [200]
+        format: json
+        includeHeaders: [Total-Results, Link]
+
+    - name: zotero_list_collection_items
+      title: List items in a collection
+      description: Fetch the items contained in a specific collection.
+      annotations:
+        readOnlyHint: true
+        openWorldHint: false
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required: [collectionKey]
+        properties:
+          collectionKey:
+            type: string
+            description: Eight character collection key from zotero_list_collections.
+            pattern: '^[A-Z0-9]{8}$'
+          limit:
+            type: integer
+            minimum: 1
+            maximum: 100
+          start:
+            type: integer
+            minimum: 0
+      request:
+        method: GET
+        path: /api/users/{{vars.userId}}/collections/{{input.collectionKey}}/items
+        query:
+          limit: "{{input.limit|default:25}}"
+          start: "{{input.start}}"
+          format: json
+          include: data
+      response:
+        successCodes: [200]
+        format: json
+        includeHeaders: [Total-Results, Link]
+
+    - name: zotero_list_tags
+      title: List tags
+      description: List the tags used in the library, optionally filtered by a prefix.
+      annotations:
+        readOnlyHint: true
+        openWorldHint: false
+      inputSchema:
+        type: object
+        additionalProperties: false
+        properties:
+          query:
+            type: string
+            description: Return only tags matching this text.
+            maxLength: 128
+          limit:
+            type: integer
+            minimum: 1
+            maximum: 200
+      request:
+        method: GET
+        path: /api/users/{{vars.userId}}/tags
+        query:
+          q: "{{input.query}}"
+          limit: "{{input.limit|default:100}}"
+          format: json
+      response:
+        successCodes: [200]
+        format: json
+        includeHeaders: [Total-Results]
+
+    - name: zotero_list_saved_searches
+      title: List saved searches
+      description: List the saved searches defined in the library.
+      annotations:
+        readOnlyHint: true
+        openWorldHint: false
+      inputSchema:
+        type: object
+        additionalProperties: false
+        properties:
+          limit:
+            type: integer
+            minimum: 1
+            maximum: 100
+      request:
+        method: GET
+        path: /api/users/{{vars.userId}}/searches
+        query:
+          limit: "{{input.limit|default:50}}"
+          format: json
+      response:
+        successCodes: [200]
+        format: json
+
+    - name: zotero_get_item_bibliography
+      title: Format an item as a citation
+      description: >-
+        Render a formatted bibliography entry for an item in a citation style
+        such as apa, chicago-note-bibliography, modern-language-association or
+        ieee. Returns HTML.
+      annotations:
+        readOnlyHint: true
+        openWorldHint: false
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required: [itemKey]
+        properties:
+          itemKey:
+            type: string
+            pattern: '^[A-Z0-9]{8}$'
+          style:
+            type: string
+            description: CSL style name. Defaults to chicago-note-bibliography.
+            pattern: '^[a-z0-9][a-z0-9-]{0,63}$'
+      request:
+        method: GET
+        path: /api/users/{{vars.userId}}/items/{{input.itemKey}}
+        query:
+          format: bib
+          style: "{{input.style|default:chicago-note-bibliography}}"
+      response:
+        successCodes: [200]
+        format: text
+
+    - name: zotero_export_items
+      title: Export items in a bibliographic format
+      description: >-
+        Export one or more items as BibTeX, RIS, CSL JSON or another supported
+        export format. Supply up to 50 comma separated item keys.
+      annotations:
+        readOnlyHint: true
+        openWorldHint: false
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required: [itemKeys]
+        properties:
+          itemKeys:
+            type: string
+            description: Comma separated list of eight character item keys.
+            pattern: '^[A-Z0-9]{8}(,[A-Z0-9]{8}){0,49}$'
+          format:
+            type: string
+            enum: [bibtex, biblatex, ris, csljson, mods, refer, rdf_bibliontology]
+      request:
+        method: GET
+        path: /api/users/{{vars.userId}}/items
+        query:
+          itemKey: "{{input.itemKeys}}"
+          format: "{{input.format|default:bibtex}}"
+      response:
+        successCodes: [200]
+        format: text
+
+    - name: zotero_list_trash
+      title: List trashed items
+      description: List items currently in the library trash.
+      annotations:
+        readOnlyHint: true
+        openWorldHint: false
+      inputSchema:
+        type: object
+        additionalProperties: false
+        properties:
+          limit:
+            type: integer
+            minimum: 1
+            maximum: 100
+      request:
+        method: GET
+        path: /api/users/{{vars.userId}}/items/trash
+        query:
+          limit: "{{input.limit|default:25}}"
+          format: json
+          include: data
+      response:
+        successCodes: [200]
+        format: json
+        includeHeaders: [Total-Results]

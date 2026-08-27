@@ -1,0 +1,57 @@
+{{define "content"}}
+{{$d := .Data}}
+{{$csrf := .CSRF}}
+<div class="page-head">
+  <div>
+    <h1>Connectors</h1>
+    <p class="lede">
+      A connector describes an HTTP API — its base URL, its authentication scheme and
+      the tools it exposes. Connectors are data: MCPaw never executes anything from a
+      manifest.
+    </p>
+  </div>
+</div>
+
+<div class="catalogue">
+  {{range $d.Connectors}}
+  <article class="panel">
+    <div class="panel__head">
+      <p class="card-title">{{.Record.Name}}</p>
+      <span class="tag tag--off">{{.Record.Source}}</span>
+    </div>
+    <p class="muted">{{.Compiled.Manifest.Metadata.Description}}</p>
+    <dl class="facts">
+      <dt>ID</dt><dd><code>{{.Record.ID}}</code></dd>
+      <dt>Version</dt><dd><span class="mono">{{.Record.Version}}</span></dd>
+      <dt>Tools</dt><dd><span class="mono">{{len .Compiled.Tools}}</span></dd>
+      <dt>Upstream</dt><dd><code>{{.Compiled.Manifest.Spec.BaseURL.Default}}</code></dd>
+    </dl>
+    <div class="actions">
+      <a class="btn btn--sm" href="/instances/new?connector={{.Record.ID}}">Create instance</a>
+      {{if .Record.Editable}}
+      <form method="post" action="/connectors/{{.Record.ID}}/delete" class="inline">
+        <input type="hidden" name="csrf_token" value="{{$csrf}}">
+        <button type="submit" class="linkbtn linkbtn--danger">Delete</button>
+      </form>
+      {{end}}
+    </div>
+  </article>
+  {{end}}
+</div>
+
+<section class="panel panel--roomy">
+  <div class="panel__head"><h2>Import a manifest</h2></div>
+  <p class="lede">
+    Paste YAML. It is fully validated before it is stored — every template reference,
+    JSON Schema and request definition must be correct, so a manifest that would fail
+    at call time is rejected here instead.
+  </p>
+  <form method="post" action="/connectors/import">
+    <input type="hidden" name="csrf_token" value="{{$csrf}}">
+    <label for="manifest">Manifest — YAML</label>
+    <textarea id="manifest" name="manifest" rows="16" spellcheck="false"
+              placeholder="apiVersion: mcpaw.dev/v1&#10;kind: Connector&#10;metadata:&#10;  id: my-api"></textarea>
+    <button type="submit" class="btn btn--primary btn--submit">Validate and import</button>
+  </form>
+</section>
+{{end}}

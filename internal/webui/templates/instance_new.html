@@ -1,0 +1,79 @@
+{{define "content"}}
+{{$d := .Data}}
+<div class="page-head"><h1>New instance</h1></div>
+
+{{if not $d.Connectors}}
+<div class="panel empty">
+  <h2>No connectors available</h2>
+  <p>Import a connector manifest before creating an instance.</p>
+  <a class="btn" href="/connectors">Go to connectors</a>
+</div>
+{{else}}
+<form method="post" action="/instances" class="panel panel--roomy">
+  <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+
+  <label for="connector_id">Connector</label>
+  <select id="connector_id" name="connector_id" required>
+    {{range $d.Connectors}}
+      <option value="{{.Record.ID}}"{{if eq .Record.ID $d.SelectedConnector}} selected{{end}}>{{.Record.Name}} — {{len .Compiled.Tools}} tools</option>
+    {{end}}
+  </select>
+  <p class="hint">Switching connector reloads this form with that connector's defaults and variables.</p>
+  <button type="submit" name="action" value="choose" class="btn btn--submit">Use this connector</button>
+
+  {{with $d.Selected}}
+  <hr class="divider">
+  <h2>{{.Record.Name}}</h2>
+  <p class="lede">{{.Compiled.Manifest.Metadata.Description}}</p>
+
+  <label for="name">Display name</label>
+  <input id="name" name="name" type="text" required value="{{$d.Form.Name}}" maxlength="120">
+
+  <label for="slug">Endpoint slug</label>
+  <input id="slug" name="slug" type="text" value="{{$d.Form.Slug}}"
+         pattern="[a-z0-9][a-z0-9-]{1,62}" maxlength="63" aria-describedby="slug-help">
+  <p id="slug-help" class="hint">
+    The endpoint becomes <code>{{$.PublicURL}}/mcp/&lt;slug&gt;</code>. Leave empty to derive it from the name.
+  </p>
+
+  <label for="description">Description <span class="muted">— optional</span></label>
+  <input id="description" name="description" type="text" value="{{$d.Form.Description}}" maxlength="300">
+
+  <label for="base_url">Upstream base URL</label>
+  <input id="base_url" name="base_url" type="url" required value="{{$d.Form.BaseURL}}"
+         {{if .Compiled.Manifest.Spec.BaseURL.Locked}}readonly{{end}}>
+  <p class="hint">{{.Compiled.Manifest.Spec.BaseURL.Description}}</p>
+
+  {{range .Compiled.Variables}}
+  <label for="var_{{.Name}}">{{.Name}}{{if .Required}} <span class="req">*</span>{{end}}</label>
+  <input id="var_{{.Name}}" name="var_{{.Name}}" type="text"
+         value="{{index $d.Form.Variables .Name}}" placeholder="{{.Default}}"
+         {{if .Pattern}}pattern="{{.Pattern}}"{{end}}>
+  <p class="hint">{{.Description}}</p>
+  {{end}}
+
+  {{if .Compiled.Manifest.Spec.BaseURL.RequiresPrivateNetwork}}
+  <div class="callout">
+    <h3>This connector talks to a private address</h3>
+    <p>
+      MCPaw refuses loopback and private-network destinations unless you open them
+      for this instance. Cloud instance-metadata addresses stay blocked either way.
+    </p>
+  </div>
+  {{end}}
+
+  <label class="check">
+    <input type="checkbox" name="allow_private_network" {{if $d.Form.AllowPrivateNetwork}}checked{{end}}>
+    Allow requests to loopback and private-network addresses
+  </label>
+
+  <label class="check">
+    <input type="checkbox" name="enabled" {{if $d.Form.Enabled}}checked{{end}}>
+    Serve this endpoint immediately
+  </label>
+
+  <button type="submit" name="action" value="create" class="btn btn--primary btn--submit">Create instance</button>
+  {{end}}
+</form>
+{{end}}
+{{end}}

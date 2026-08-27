@@ -149,10 +149,13 @@ func TestZoteroConnectorShape(t *testing.T) {
 		}
 	}
 
-	// The api key is optional so the same connector serves the unauthenticated
-	// local API and the authenticated hosted one.
-	if len(zotero.Secrets()) != 1 || zotero.Secrets()[0].Required {
-		t.Errorf("unexpected secret declaration: %+v", zotero.Secrets())
+	// Every declared secret (the Web API key, the embedder sidecar's token)
+	// is optional: the connector must keep working, unauthenticated, against
+	// the local API with nothing configured at all.
+	for _, secret := range zotero.Secrets() {
+		if secret.Required {
+			t.Errorf("secret %s must be optional", secret.Name)
+		}
 	}
 	if missing := zotero.MissingRequiredSecrets(nil); len(missing) != 0 {
 		t.Errorf("Zotero should work with no secrets, missing=%v", missing)

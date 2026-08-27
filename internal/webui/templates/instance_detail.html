@@ -46,6 +46,36 @@
   </div>
 </section>
 
+{{with $d.SearchIndex}}
+<section class="panel panel--tight">
+  <div class="panel__head"><h2>Semantic search</h2></div>
+  <p class="lede">
+    Finds passages in this library's PDF and snapshot text by meaning, so an MCP
+    client can pull a few relevant excerpts instead of a whole document. Configure
+    <code>embedderUrl</code> below to point at an embeddings sidecar (Ollama or
+    text-embeddings-inference), then build the index here. It only appears to
+    clients once it holds at least one chunk.
+  </p>
+  <dl class="facts">
+    <dt>Indexed chunks</dt><dd>{{.ChunkCount}}</dd>
+    <dt>State</dt>
+    <dd>
+      {{if .Status.Running}}<span class="tag tag--warn">indexing…</span>
+      {{else if .Status.LastError}}<span class="tag tag--warn">failed: {{.Status.LastError}}</span>
+      {{else if .ChunkCount}}<span class="tag tag--ok">ready</span>
+      {{else}}<span class="tag tag--off">not built</span>{{end}}
+    </dd>
+    {{if not .Status.FinishedAt.IsZero}}<dt>Last run</dt><dd>{{formatTime .Status.FinishedAt}} — {{.Status.ItemsProcessed}} items, {{.Status.ChunksIndexed}} chunks</dd>{{end}}
+  </dl>
+  <form method="post" action="/instances/{{$inst.ID}}/reindex" class="inline">
+    <input type="hidden" name="csrf_token" value="{{$csrf}}">
+    <button type="submit" class="btn" {{if .Status.Running}}disabled{{end}}>
+      {{if .ChunkCount}}Rebuild index{{else}}Build index{{end}}
+    </button>
+  </form>
+</section>
+{{end}}
+
 <section class="panel panel--roomy">
   <div class="panel__head"><h2>Configuration</h2></div>
   <form method="post" action="/instances/{{$inst.ID}}">

@@ -90,6 +90,12 @@ func New(cfg Config) *Executor {
 // clear its state.
 func (e *Executor) Breaker() *upstream.Breaker { return e.breaker }
 
+// Client exposes the shared guarded HTTP client so other subsystems (the
+// semantic-search indexer calling an embedder sidecar) reach the network
+// through the same SSRF-guarded transport as every declarative tool call,
+// rather than opening a second, unguarded one.
+func (e *Executor) Client() *upstream.Client { return e.client }
+
 // Execute validates arguments, renders the upstream request, applies every
 // runtime control and maps the response.
 //

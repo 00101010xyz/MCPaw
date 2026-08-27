@@ -17,6 +17,7 @@ import (
 	"github.com/00101010xyz/mcpaw/internal/engine"
 	"github.com/00101010xyz/mcpaw/internal/httpapi"
 	"github.com/00101010xyz/mcpaw/internal/httpx"
+	"github.com/00101010xyz/mcpaw/internal/index"
 	"github.com/00101010xyz/mcpaw/internal/mcp"
 	"github.com/00101010xyz/mcpaw/internal/platform/config"
 	"github.com/00101010xyz/mcpaw/internal/platform/logging"
@@ -117,7 +118,11 @@ func runServe(args []string) error {
 	instances := service.NewInstances(service.InstancesConfig{
 		Repo: repos.Instances(), Connectors: connectors, Sealer: sealer, Executor: executor, Audit: audit,
 	})
-	mcpBackend := service.NewMCPBackend(instances, audit, version, logger)
+	indexer := service.NewIndexer(service.IndexerConfig{
+		Repo: repos.SearchIndex(), Instances: instances, Audit: audit,
+		Embedder: &index.Embedder{Client: executor.Client()}, Logger: logger,
+	})
+	mcpBackend := service.NewMCPBackend(instances, indexer, audit, version, logger)
 
 	// --- MCP protocol server ---------------------------------------------------
 	mcpSessions := mcp.NewSessionStore(mcp.SessionConfig{})
@@ -133,7 +138,7 @@ func runServe(args []string) error {
 	// --- Web UI and HTTP surface ------------------------------------------------
 	webUI, err := webui.New(webui.Config{
 		Users: users, Sessions: sessions, Instances: instances, Connectors: connectors,
-		Tokens: tokens, Audit: audit, Logger: logger,
+		Tokens: tokens, Audit: audit, Indexer: indexer, Logger: logger,
 		PublicURL: cfg.PublicURL, Version: version, SecureCookies: cfg.SecureCookies,
 		SessionMaxAge: cfg.SessionAbsoluteTimeout,
 		LoginLimiter:  httpx.NewAttemptLimiter(cfg.LoginRateLimitPerMin, time.Minute),

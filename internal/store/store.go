@@ -21,6 +21,7 @@ type Repositories interface {
 	Instances() InstanceRepository
 	Tokens() TokenRepository
 	Audit() AuditRepository
+	SearchIndex() SearchIndexRepository
 
 	// Ping verifies the datastore is reachable; used by the readiness probe.
 	Ping(ctx context.Context) error
@@ -102,4 +103,26 @@ type AuditRepository interface {
 	Append(ctx context.Context, e *domain.AuditEvent) error
 	List(ctx context.Context, f AuditFilter) ([]*domain.AuditEvent, error)
 	Prune(ctx context.Context, olderThan time.Time) (int64, error)
+}
+
+// SearchIndexRepository persists the semantic-search index. An instance's
+// embedder configuration is not stored here: it travels as an ordinary
+// connector variable/secret, so it reuses the existing sealing, validation
+// and web UI rather than a parallel configuration path.
+type SearchIndexRepository interface {
+	// ClearInstance removes every chunk belonging to an instance. A reindex
+	// always starts here so stale chunks from a prior model or a deleted
+	// item can never linger and be served as if current.
+	ClearInstance(ctx context.Context, instanceID string) error
+	// InsertChunks appends chunks, incrementally during a reindex, so a
+	// crash or timeout partway through leaves a partial-but-usable index
+	// rather than nothing.
+	InsertChunks(ctx context.Context, instanceID string, chunks []domain.IndexChunk) error
+	CountChunks(ctx context.Context, instanceID string) (int, error)
+	// LoadAll returns every chunk (with its embedding) for an instance, for
+	// brute-force vector comparison. Sized for a personal reference library,
+	// not for building an ANN index.
+	LoadAll(ctx context.Context, instanceID string) ([]domain.IndexChunk, error)
+	// BM25Search returns chunk IDs ranked by full-text relevance, best first.
+	BM25Search(ctx context.Context, instanceID, query string, limit int) ([]int64, error)
 }

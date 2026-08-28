@@ -18,6 +18,7 @@ import (
 	"github.com/00101010xyz/mcpaw/internal/engine"
 	"github.com/00101010xyz/mcpaw/internal/httpx"
 	"github.com/00101010xyz/mcpaw/internal/index"
+	_ "github.com/00101010xyz/mcpaw/internal/index/source/zotero" // registers the Zotero crawler
 	"github.com/00101010xyz/mcpaw/internal/secrets"
 	"github.com/00101010xyz/mcpaw/internal/service"
 	"github.com/00101010xyz/mcpaw/internal/store/sqlitestore"

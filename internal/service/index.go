@@ -9,27 +9,21 @@ import (
 	"sync"
 	"time"
 
-	"github.com/00101010xyz/mcpaw/internal/connector"
 	"github.com/00101010xyz/mcpaw/internal/domain"
 	"github.com/00101010xyz/mcpaw/internal/engine"
 	"github.com/00101010xyz/mcpaw/internal/index"
+	"github.com/00101010xyz/mcpaw/internal/index/source"
 	"github.com/00101010xyz/mcpaw/internal/store"
 )
 
-// zoteroConnectorID is the only connector Phase 1 indexing understands how to
-// crawl: it calls specific Zotero tool names to enumerate items, find PDF and
-// snapshot attachments, and pull their extracted text. Generalising this to
-// any connector (via a declarative "how to enumerate content" block in the
-// manifest) is future work, not something to guess at here.
-const zoteroConnectorID = "zotero-local"
-
-// Chunking, batching and safety caps for one reindex run. These bound how
-// long and how much memory an operator-triggered reindex can consume; they
-// are deliberately generous for a personal reference library and deliberately
-// not exposed as configuration, to keep the feature's surface small.
+// Chunking, batching and timeout caps for one reindex run. These bound how
+// long and how much memory an operator-triggered reindex can consume; a
+// per-source crawl (internal/index/source/*) has its own pagination caps for
+// how much of a library it is willing to walk. These stay here because they
+// govern the chunk/embed/store step every source shares, deliberately
+// generous for a personal library and deliberately not exposed as
+// configuration, to keep the feature's surface small.
 const (
-	reindexPageSize         = 100
-	reindexMaxItems         = 2000
 	reindexMaxChunksPerFile = 200
 	reindexEmbedBatch       = 16
 	reindexTimeout          = 30 * time.Minute
@@ -46,7 +40,10 @@ const (
 // IndexStatus reports the state of an instance's semantic-search index for
 // the web UI.
 type IndexStatus struct {
-	Running        bool
+	Running bool
+	// ItemsProcessed counts every document the crawl examined, whether or
+	// not it produced any indexable text — a rough progress signal, not an
+	// exact count of anything more specific than "documents visited".
 	ItemsProcessed int
 	ChunksIndexed  int
 	LastError      string
@@ -99,9 +96,13 @@ func NewIndexer(cfg IndexerConfig) *Indexer {
 	}
 }
 
-// Supported reports whether a connector is one this indexer knows how to
-// crawl. The web UI uses this to decide whether to show the feature at all.
-func (s *Indexer) Supported(connectorID string) bool { return connectorID == zoteroConnectorID }
+// Supported reports whether a connector has a registered crawler (see
+// internal/index/source). The web UI uses this to decide whether to show the
+// feature at all.
+func (s *Indexer) Supported(connectorID string) bool {
+	_, ok := source.Get(connectorID)
+	return ok
+}
 
 // Ready reports whether an instance has a usable index, which is what gates
 // advertising the semantic search tool to MCP clients: an empty or
@@ -136,7 +137,7 @@ func (s *Indexer) Reindex(ctx context.Context, actor Actor, instanceID string) e
 		return err
 	}
 	if !s.Supported(resolved.ConnectorRec.ID) {
-		return fmt.Errorf("%w: semantic search indexing currently supports only the Zotero (Local API) connector", domain.ErrInvalidInput)
+		return fmt.Errorf("%w: semantic search indexing is not available for this connector", domain.ErrInvalidInput)
 	}
 
 	s.mu.Lock()
@@ -172,20 +173,16 @@ func (s *Indexer) runReindex(instanceID string) {
 		return
 	}
 
-	topItems, ok := s.enabledTool(resolved, "zotero_list_top_items")
+	crawler, ok := source.Get(resolved.ConnectorRec.ID)
 	if !ok {
-		s.fail(instanceID, fmt.Errorf("this instance needs zotero_list_top_items enabled to index"))
+		s.fail(instanceID, fmt.Errorf("semantic search indexing is not available for this connector"))
 		return
 	}
-	children, ok := s.enabledTool(resolved, "zotero_get_item_children")
-	if !ok {
-		s.fail(instanceID, fmt.Errorf("this instance needs zotero_get_item_children enabled to index"))
-		return
-	}
-	fulltext, ok := s.enabledTool(resolved, "zotero_get_item_fulltext")
-	if !ok {
-		s.fail(instanceID, fmt.Errorf("this instance needs zotero_get_item_fulltext enabled to index"))
-		return
+	for _, toolName := range crawler.RequiredTools() {
+		if _, declared := resolved.Connector.Tool(toolName); !declared || !resolved.EnabledTools[toolName] {
+			s.fail(instanceID, fmt.Errorf("this instance needs %q enabled to index", toolName))
+			return
+		}
 	}
 
 	if err := s.repo.ClearInstance(ctx, instanceID); err != nil {
@@ -193,89 +190,28 @@ func (s *Indexer) runReindex(instanceID string) {
 		return
 	}
 
-	executor := s.instances.Executor()
-	start := 0
-	for processed := 0; processed < reindexMaxItems; {
-		result, err := executor.Execute(ctx, target, resolved.Connector, topItems, map[string]any{"limit": reindexPageSize, "start": start})
-		if err != nil {
-			s.fail(instanceID, err)
-			return
-		}
-		items, _ := result.Data.([]any)
-		if len(items) == 0 {
-			break
-		}
-		for _, raw := range items {
-			item, _ := raw.(map[string]any)
-			key, _ := item["key"].(string)
-			if key == "" {
-				continue
-			}
-			s.indexItem(ctx, executor, target, resolved, children, fulltext, instanceID, key)
-			processed++
-			s.addItem(instanceID)
-		}
-		if len(items) < reindexPageSize {
-			break
-		}
-		start += reindexPageSize
+	rt := source.Runtime{
+		Executor: s.instances.Executor(), Target: target,
+		Connector: resolved.Connector, EnabledTools: resolved.EnabledTools,
 	}
-}
-
-// enabledTool looks up a tool the connector declares and requires it to be
-// enabled on this instance: indexing runs unattended, so it must respect the
-// same on/off switch an operator uses to turn a tool off for MCP clients,
-// rather than reaching upstream behind their back.
-func (s *Indexer) enabledTool(r *Resolved, name string) (*connector.CompiledTool, bool) {
-	tool, ok := r.Connector.Tool(name)
-	if !ok || !r.EnabledTools[name] {
-		return nil, false
-	}
-	return tool, true
-}
-
-func (s *Indexer) indexItem(ctx context.Context, executor *engine.Executor, target *engine.Target, resolved *Resolved, childrenTool, fulltextTool *connector.CompiledTool, instanceID, itemKey string) {
-	result, err := executor.Execute(ctx, target, resolved.Connector, childrenTool, map[string]any{"itemKey": itemKey, "limit": 50})
+	err = crawler.Crawl(ctx, rt, func(ctx context.Context, doc source.Document, text string) error {
+		s.addItem(instanceID)
+		if strings.TrimSpace(text) != "" {
+			s.indexDocument(ctx, resolved, target, instanceID, doc, text)
+		}
+		return nil
+	})
 	if err != nil {
-		s.logger.Debug("index: listing children failed", slog.String("item", itemKey), slog.String("error", err.Error()))
-		return
-	}
-	children, _ := result.Data.([]any)
-	for _, raw := range children {
-		child, _ := raw.(map[string]any)
-		data, _ := child["data"].(map[string]any)
-		if data == nil {
-			continue
-		}
-		if itemType, _ := data["itemType"].(string); itemType != "attachment" {
-			continue
-		}
-		contentType, _ := data["contentType"].(string)
-		if contentType != "application/pdf" && contentType != "text/html" {
-			continue
-		}
-		attKey, _ := child["key"].(string)
-		if attKey == "" {
-			continue
-		}
-		s.indexAttachment(ctx, executor, target, resolved, fulltextTool, instanceID, itemKey, attKey)
+		s.fail(instanceID, err)
 	}
 }
 
-func (s *Indexer) indexAttachment(ctx context.Context, executor *engine.Executor, target *engine.Target, resolved *Resolved, fulltextTool *connector.CompiledTool, instanceID, itemKey, attachmentKey string) {
-	result, err := executor.Execute(ctx, target, resolved.Connector, fulltextTool, map[string]any{"itemKey": attachmentKey})
-	if err != nil {
-		// Most commonly a 404: Zotero has not extracted text for this
-		// attachment yet. Not worth aborting or even logging per-attachment.
-		return
-	}
-	data, _ := result.Data.(map[string]any)
-	content, _ := data["content"].(string)
-	if strings.TrimSpace(content) == "" {
-		return
-	}
-
-	spans := index.Chunk(content)
+// indexDocument chunks, embeds and stores one document's text. This is the
+// part every source shares — chunking and embedding know nothing about
+// where the text came from — unlike the crawl itself, which is entirely
+// source-specific (see internal/index/source).
+func (s *Indexer) indexDocument(ctx context.Context, resolved *Resolved, target *engine.Target, instanceID string, doc source.Document, text string) {
+	spans := index.Chunk(text)
 	if len(spans) > reindexMaxChunksPerFile {
 		spans = spans[:reindexMaxChunksPerFile]
 	}
@@ -290,13 +226,13 @@ func (s *Indexer) indexAttachment(ctx context.Context, executor *engine.Executor
 		vectors, err := s.embedder.Embed(ctx, resolved.Instance.EmbedderURL, resolved.Instance.EmbedderModel,
 			target.Secrets[index.EmbedderAPIKey], target.Policy, texts[i:end])
 		if err != nil {
-			s.logger.Warn("index: embedding failed", slog.String("attachment", attachmentKey), slog.String("error", err.Error()))
+			s.logger.Warn("index: embedding failed", slog.String("attachment", doc.AttachmentKey), slog.String("error", err.Error()))
 			return
 		}
 		for j, v := range vectors {
 			sp := spans[i+j]
 			chunks = append(chunks, domain.IndexChunk{
-				InstanceID: instanceID, ItemKey: itemKey, AttachmentKey: attachmentKey,
+				InstanceID: instanceID, ItemKey: doc.ItemKey, AttachmentKey: doc.AttachmentKey,
 				ChunkIndex: sp.Index, CharStart: sp.Start, CharEnd: sp.End, Text: sp.Text, Embedding: v,
 			})
 		}
@@ -305,7 +241,7 @@ func (s *Indexer) indexAttachment(ctx context.Context, executor *engine.Executor
 		return
 	}
 	if err := s.repo.InsertChunks(ctx, instanceID, chunks); err != nil {
-		s.logger.Warn("index: storing chunks failed", slog.String("attachment", attachmentKey), slog.String("error", err.Error()))
+		s.logger.Warn("index: storing chunks failed", slog.String("attachment", doc.AttachmentKey), slog.String("error", err.Error()))
 		return
 	}
 	s.addChunks(instanceID, len(chunks))

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -56,6 +57,70 @@ func fakeGiteaServer(t *testing.T) *httptest.Server {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// mutableGiteaServer is fakeGiteaServer's counterpart for tests that need
+// the upstream repository's content to change between two Reindex calls —
+// proving a document was skipped, replaced or pruned means controlling
+// exactly what the second crawl sees.
+type mutableGiteaServer struct {
+	mu    sync.Mutex
+	tree  string
+	blobs map[string]string
+	srv   *httptest.Server
+}
+
+func newMutableGiteaServer(t *testing.T) *mutableGiteaServer {
+	t.Helper()
+	m := &mutableGiteaServer{tree: `{"tree":[],"truncated":false}`, blobs: map[string]string{}}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/repos/octocat/thesis/git/trees/main", func(w http.ResponseWriter, r *http.Request) {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, m.tree)
+	})
+	mux.HandleFunc("/api/v1/repos/octocat/thesis/git/blobs/", func(w http.ResponseWriter, r *http.Request) {
+		sha := strings.TrimPrefix(r.URL.Path, "/api/v1/repos/octocat/thesis/git/blobs/")
+		m.mu.Lock()
+		content, ok := m.blobs[sha]
+		m.mu.Unlock()
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"content":%q,"encoding":"base64"}`, base64.StdEncoding.EncodeToString([]byte(content)))
+	})
+	m.srv = httptest.NewServer(mux)
+	t.Cleanup(m.srv.Close)
+	return m
+}
+
+// setFiles replaces the whole tree listing and blob content in one call, so
+// a test can move from "these documents exist" to "these other ones do" —
+// the exact scenario a document skip, replace or prune test needs.
+func (m *mutableGiteaServer) setFiles(files map[string]string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var entries []string
+	m.blobs = map[string]string{}
+	for path, content := range files {
+		sha := fmt.Sprintf("%08x", len(entries)+1)
+		m.blobs[sha] = content
+		entries = append(entries, fmt.Sprintf(`{"path":%q,"type":"blob","sha":%q}`, path, sha))
+	}
+	m.tree = fmt.Sprintf(`{"tree":[%s],"truncated":false}`, strings.Join(entries, ","))
+}
+
+// setFilesTruncated is setFiles, but with the tree listing's own truncated
+// flag forced true — simulating the Gitea server itself having cut the
+// listing short, independent of anything this crawler's own caps would do.
+func (m *mutableGiteaServer) setFilesTruncated(files map[string]string) {
+	m.setFiles(files)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.tree = strings.Replace(m.tree, `"truncated":false`, `"truncated":true`, 1)
 }
 
 // fakeEmbedderServer serves the Ollama-compatible /api/embed contract,
@@ -133,7 +198,7 @@ func TestIndexerReindexEndToEnd(t *testing.T) {
 		t.Error("Ready must be false before any reindex has run")
 	}
 
-	if err := env.Indexer.Reindex(ctx, systemActor(), inst.ID); err != nil {
+	if err := env.Indexer.Reindex(ctx, systemActor(), inst.ID, ReindexUpdate); err != nil {
 		t.Fatalf("Reindex: %v", err)
 	}
 	st := waitForIndexDone(t, env, inst.ID, 5*time.Second)
@@ -195,7 +260,7 @@ func TestIndexerReindexEndToEndGitea(t *testing.T) {
 		t.Fatal("Supported(\"gitea\") = false, want true once source/gitea is registered")
 	}
 
-	if err := env.Indexer.Reindex(ctx, systemActor(), inst.ID); err != nil {
+	if err := env.Indexer.Reindex(ctx, systemActor(), inst.ID, ReindexUpdate); err != nil {
 		t.Fatalf("Reindex: %v", err)
 	}
 	st := waitForIndexDone(t, env, inst.ID, 5*time.Second)
@@ -224,6 +289,287 @@ func TestIndexerReindexEndToEndGitea(t *testing.T) {
 	}
 }
 
+// createIndexableGiteaInstance creates an instance pointed at a mutable fake
+// Gitea server, with the fake embedder configured and both crawl tools
+// enabled — the common setup for the incremental-update tests below, which
+// all need to change what the server serves between two Reindex calls.
+func createIndexableGiteaInstance(t *testing.T, env *testEnv, giteaURL, embedderURL string) *domain.Instance {
+	t.Helper()
+	ctx := context.Background()
+	in := CreateInput{
+		// Each test gets its own isolated env/database (see newTestEnv), so
+		// a constant slug is fine — nothing else in the same test process
+		// shares this instance.
+		Name: "My Thesis", Slug: "my-thesis-incremental", ConnectorID: "gitea",
+		BaseURL:             giteaURL,
+		Variables:           map[string]string{"owner": "octocat", "repo": "thesis", "ref": "main"},
+		Enabled:             true,
+		AllowPrivateNetwork: true,
+		EmbedderURL:         embedderURL,
+	}
+	inst, err := env.Instances.Create(ctx, systemActor(), in)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	for _, tool := range []string{"gitea_list_tree", "gitea_get_file"} {
+		if err := env.Instances.SetToolEnabled(ctx, systemActor(), inst.ID, tool, true); err != nil {
+			t.Fatalf("SetToolEnabled(%s): %v", tool, err)
+		}
+	}
+	return inst
+}
+
+func TestIndexerUpdateSkipsUnchangedDocument(t *testing.T) {
+	env := newTestEnv(t)
+	gitea := newMutableGiteaServer(t)
+	embedder := fakeEmbedderServer(t)
+	ctx := context.Background()
+	inst := createIndexableGiteaInstance(t, env, gitea.srv.URL, embedder.URL)
+
+	gitea.setFiles(map[string]string{"a.md": "# A\n\nSame content both runs."})
+	if err := env.Indexer.Reindex(ctx, systemActor(), inst.ID, ReindexUpdate); err != nil {
+		t.Fatalf("first Reindex: %v", err)
+	}
+	first := waitForIndexDone(t, env, inst.ID, 5*time.Second)
+	if first.LastError != "" {
+		t.Fatalf("first reindex failed: %s", first.LastError)
+	}
+	if first.ChunksIndexed == 0 {
+		t.Fatal("first run indexed no chunks")
+	}
+	countAfterFirst, err := env.Store.SearchIndex().CountChunks(ctx, inst.ID)
+	if err != nil {
+		t.Fatalf("CountChunks: %v", err)
+	}
+
+	// Same file, same content: a second Update run must recognise it as
+	// unchanged and do no embedding work for it at all.
+	if err := env.Indexer.Reindex(ctx, systemActor(), inst.ID, ReindexUpdate); err != nil {
+		t.Fatalf("second Reindex: %v", err)
+	}
+	second := waitForIndexDone(t, env, inst.ID, 5*time.Second)
+	if second.LastError != "" {
+		t.Fatalf("second reindex failed: %s", second.LastError)
+	}
+	if second.DocumentsSkipped != 1 {
+		t.Errorf("DocumentsSkipped = %d, want 1", second.DocumentsSkipped)
+	}
+	if second.ChunksIndexed != 0 {
+		t.Errorf("ChunksIndexed = %d, want 0: an unchanged document must not be re-embedded", second.ChunksIndexed)
+	}
+	countAfterSecond, err := env.Store.SearchIndex().CountChunks(ctx, inst.ID)
+	if err != nil {
+		t.Fatalf("CountChunks: %v", err)
+	}
+	if countAfterSecond != countAfterFirst {
+		t.Errorf("chunk count changed from %d to %d for an unchanged document", countAfterFirst, countAfterSecond)
+	}
+}
+
+func TestIndexerUpdateReplacesChangedDocument(t *testing.T) {
+	env := newTestEnv(t)
+	gitea := newMutableGiteaServer(t)
+	embedder := fakeEmbedderServer(t)
+	ctx := context.Background()
+	inst := createIndexableGiteaInstance(t, env, gitea.srv.URL, embedder.URL)
+
+	gitea.setFiles(map[string]string{"a.md": "# A\n\nOriginal content."})
+	if err := env.Indexer.Reindex(ctx, systemActor(), inst.ID, ReindexUpdate); err != nil {
+		t.Fatalf("first Reindex: %v", err)
+	}
+	waitForIndexDone(t, env, inst.ID, 5*time.Second)
+
+	gitea.setFiles(map[string]string{"a.md": "# A\n\nCompletely different content now."})
+	if err := env.Indexer.Reindex(ctx, systemActor(), inst.ID, ReindexUpdate); err != nil {
+		t.Fatalf("second Reindex: %v", err)
+	}
+	second := waitForIndexDone(t, env, inst.ID, 5*time.Second)
+	if second.LastError != "" {
+		t.Fatalf("second reindex failed: %s", second.LastError)
+	}
+	if second.DocumentsSkipped != 0 {
+		t.Errorf("DocumentsSkipped = %d, want 0: the document's content changed", second.DocumentsSkipped)
+	}
+	if second.ChunksIndexed == 0 {
+		t.Error("ChunksIndexed = 0, want the changed document to have been re-embedded")
+	}
+
+	hits, err := env.Indexer.Search(ctx, inst.ID, "completely different", 5)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(hits) == 0 {
+		t.Fatal("Search found no hits for the new content")
+	}
+	oldHits, err := env.Indexer.Search(ctx, inst.ID, "original content", 5)
+	if err != nil {
+		t.Fatalf("Search (old content): %v", err)
+	}
+	for _, h := range oldHits {
+		if strings.Contains(h.Text, "Original content") {
+			t.Error("a chunk from the document's old content is still in the index after it changed")
+		}
+	}
+}
+
+func TestIndexerUpdatePrunesDocumentDeletedUpstream(t *testing.T) {
+	env := newTestEnv(t)
+	gitea := newMutableGiteaServer(t)
+	embedder := fakeEmbedderServer(t)
+	ctx := context.Background()
+	inst := createIndexableGiteaInstance(t, env, gitea.srv.URL, embedder.URL)
+
+	gitea.setFiles(map[string]string{
+		"keep.md":   "# Keep\n\nThis file stays.",
+		"delete.md": "# Delete\n\nThis file goes away.",
+	})
+	if err := env.Indexer.Reindex(ctx, systemActor(), inst.ID, ReindexUpdate); err != nil {
+		t.Fatalf("first Reindex: %v", err)
+	}
+	waitForIndexDone(t, env, inst.ID, 5*time.Second)
+
+	// delete.md no longer appears in the tree listing at all — exactly what
+	// an upstream deletion (or rename) looks like from the crawler's side.
+	gitea.setFiles(map[string]string{"keep.md": "# Keep\n\nThis file stays."})
+	if err := env.Indexer.Reindex(ctx, systemActor(), inst.ID, ReindexUpdate); err != nil {
+		t.Fatalf("second Reindex: %v", err)
+	}
+	second := waitForIndexDone(t, env, inst.ID, 5*time.Second)
+	if second.LastError != "" {
+		t.Fatalf("second reindex failed: %s", second.LastError)
+	}
+	if second.DocumentsPruned != 1 {
+		t.Errorf("DocumentsPruned = %d, want 1", second.DocumentsPruned)
+	}
+	if second.DocumentsSkipped != 1 {
+		t.Errorf("DocumentsSkipped = %d, want 1 (keep.md, unchanged)", second.DocumentsSkipped)
+	}
+
+	all, err := env.Store.SearchIndex().LoadAll(ctx, inst.ID)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	for _, c := range all {
+		if c.AttachmentKey == "delete.md" {
+			t.Error("delete.md's chunks are still in the index after being pruned")
+		}
+	}
+	docs, err := env.Store.SearchIndex().ListDocuments(ctx, inst.ID)
+	if err != nil {
+		t.Fatalf("ListDocuments: %v", err)
+	}
+	for _, d := range docs {
+		if d.AttachmentKey == "delete.md" {
+			t.Error("delete.md's bookkeeping row is still present after being pruned")
+		}
+	}
+}
+
+// A truncated crawl does not know the full current state of the library, so
+// pruning must sit out entirely rather than risk treating a document it
+// simply never reached as one deleted upstream.
+func TestIndexerUpdateSkipsPruningWhenCrawlWasTruncated(t *testing.T) {
+	env := newTestEnv(t)
+	gitea := newMutableGiteaServer(t)
+	embedder := fakeEmbedderServer(t)
+	ctx := context.Background()
+	inst := createIndexableGiteaInstance(t, env, gitea.srv.URL, embedder.URL)
+
+	gitea.setFiles(map[string]string{
+		"keep.md":  "# Keep\n\nStays.",
+		"maybe.md": "# Maybe\n\nMight look deleted, but the next crawl is truncated.",
+	})
+	if err := env.Indexer.Reindex(ctx, systemActor(), inst.ID, ReindexUpdate); err != nil {
+		t.Fatalf("first Reindex: %v", err)
+	}
+	waitForIndexDone(t, env, inst.ID, 5*time.Second)
+
+	// maybe.md is gone from this listing, but the listing is marked
+	// truncated: the crawl might simply not have reached it, so it must not
+	// be treated as deleted.
+	gitea.setFilesTruncated(map[string]string{"keep.md": "# Keep\n\nStays."})
+	if err := env.Indexer.Reindex(ctx, systemActor(), inst.ID, ReindexUpdate); err != nil {
+		t.Fatalf("second Reindex: %v", err)
+	}
+	second := waitForIndexDone(t, env, inst.ID, 5*time.Second)
+	if second.LastError != "" {
+		t.Fatalf("second reindex failed: %s", second.LastError)
+	}
+	if second.DocumentsPruned != 0 {
+		t.Errorf("DocumentsPruned = %d, want 0: a truncated crawl must never prune", second.DocumentsPruned)
+	}
+
+	docs, err := env.Store.SearchIndex().ListDocuments(ctx, inst.ID)
+	if err != nil {
+		t.Fatalf("ListDocuments: %v", err)
+	}
+	found := false
+	for _, d := range docs {
+		if d.AttachmentKey == "maybe.md" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("maybe.md's bookkeeping row was removed despite the crawl being truncated")
+	}
+}
+
+// A model change must not silently mix vectors from two models into one
+// search — Update must refuse until the operator explicitly rebuilds.
+func TestIndexerUpdateRefusesAfterEmbedderModelChanges(t *testing.T) {
+	env := newTestEnv(t)
+	gitea := newMutableGiteaServer(t)
+	embedder := fakeEmbedderServer(t)
+	ctx := context.Background()
+	inst := createIndexableGiteaInstance(t, env, gitea.srv.URL, embedder.URL)
+
+	gitea.setFiles(map[string]string{"a.md": "# A\n\nSome content."})
+	if err := env.Indexer.Reindex(ctx, systemActor(), inst.ID, ReindexUpdate); err != nil {
+		t.Fatalf("first Reindex: %v", err)
+	}
+	waitForIndexDone(t, env, inst.ID, 5*time.Second)
+	countBefore, err := env.Store.SearchIndex().CountChunks(ctx, inst.ID)
+	if err != nil {
+		t.Fatalf("CountChunks: %v", err)
+	}
+
+	newModel := "a-different-embedding-model"
+	if _, err := env.Instances.Update(ctx, systemActor(), inst.ID, UpdateInput{EmbedderModel: &newModel}); err != nil {
+		t.Fatalf("Update (change model): %v", err)
+	}
+
+	if err := env.Indexer.Reindex(ctx, systemActor(), inst.ID, ReindexUpdate); err != nil {
+		t.Fatalf("second Reindex (Update after model change): %v", err)
+	}
+	second := waitForIndexDone(t, env, inst.ID, 5*time.Second)
+	if second.LastError == "" {
+		t.Fatal("Update after a model change must fail, not silently mix vectors from two models")
+	}
+	if !strings.Contains(second.LastError, "embedder model changed") {
+		t.Errorf("LastError = %q, want it to explain the model change", second.LastError)
+	}
+	countAfterRefusedUpdate, err := env.Store.SearchIndex().CountChunks(ctx, inst.ID)
+	if err != nil {
+		t.Fatalf("CountChunks: %v", err)
+	}
+	if countAfterRefusedUpdate != countBefore {
+		t.Errorf("a refused Update must not touch the existing index: count went from %d to %d", countBefore, countAfterRefusedUpdate)
+	}
+
+	// Rebuild, by contrast, is exactly the escape hatch: it must succeed and
+	// adopt the new model.
+	if err := env.Indexer.Reindex(ctx, systemActor(), inst.ID, ReindexRebuild); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+	third := waitForIndexDone(t, env, inst.ID, 5*time.Second)
+	if third.LastError != "" {
+		t.Fatalf("Rebuild after a model change failed: %s", third.LastError)
+	}
+	if third.ChunksIndexed == 0 {
+		t.Error("Rebuild produced no chunks")
+	}
+}
+
 // A second Reindex call must not run concurrently with one still in flight —
 // the crawl clears the index first, so two overlapping runs could interleave
 // a clear from one with the inserts of another.
@@ -234,10 +580,10 @@ func TestIndexerReindexRejectsConcurrentRun(t *testing.T) {
 	inst := createIndexableZoteroInstance(t, env, zotero.URL, embedder.URL)
 	ctx := context.Background()
 
-	if err := env.Indexer.Reindex(ctx, systemActor(), inst.ID); err != nil {
+	if err := env.Indexer.Reindex(ctx, systemActor(), inst.ID, ReindexUpdate); err != nil {
 		t.Fatalf("first Reindex: %v", err)
 	}
-	err := env.Indexer.Reindex(ctx, systemActor(), inst.ID)
+	err := env.Indexer.Reindex(ctx, systemActor(), inst.ID, ReindexUpdate)
 	waitForIndexDone(t, env, inst.ID, 5*time.Second)
 	if err == nil {
 		t.Error("a second Reindex while one is running must be rejected")
@@ -292,7 +638,7 @@ spec:
 		t.Fatalf("Create: %v", err)
 	}
 
-	err = env.Indexer.Reindex(ctx, systemActor(), inst.ID)
+	err = env.Indexer.Reindex(ctx, systemActor(), inst.ID, ReindexUpdate)
 	if !errors.Is(err, domain.ErrInvalidInput) {
 		t.Errorf("Reindex on an unsupported connector: error = %v, want ErrInvalidInput", err)
 	}
@@ -315,7 +661,7 @@ func TestIndexerReindexFailsWithoutEmbedderConfigured(t *testing.T) {
 		}
 	}
 
-	if err := env.Indexer.Reindex(ctx, systemActor(), inst.ID); err != nil {
+	if err := env.Indexer.Reindex(ctx, systemActor(), inst.ID, ReindexUpdate); err != nil {
 		t.Fatalf("Reindex: %v", err)
 	}
 	st := waitForIndexDone(t, env, inst.ID, 5*time.Second)
@@ -349,7 +695,7 @@ func TestIndexerReindexRequiresEnabledTools(t *testing.T) {
 		t.Fatalf("SetToolEnabled: %v", err)
 	}
 
-	if err := env.Indexer.Reindex(ctx, systemActor(), inst.ID); err != nil {
+	if err := env.Indexer.Reindex(ctx, systemActor(), inst.ID, ReindexUpdate); err != nil {
 		t.Fatalf("Reindex: %v", err)
 	}
 	st := waitForIndexDone(t, env, inst.ID, 5*time.Second)

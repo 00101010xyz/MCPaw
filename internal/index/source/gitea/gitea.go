@@ -24,8 +24,10 @@ func init() {
 
 // maxFiles bounds how many candidate files (matching a known extension)
 // one crawl will fetch and index, independent of whatever truncation the
-// Gitea server itself applies to the tree listing.
-const maxFiles = 2000
+// Gitea server itself applies to the tree listing. A var, not a const, so a
+// test can lower it rather than construct thousands of fixture entries to
+// exercise the cap.
+var maxFiles = 2000
 
 var requiredTools = []string{"gitea_list_tree", "gitea_get_file"}
 
@@ -48,17 +50,22 @@ type Crawler struct{}
 func (Crawler) RequiredTools() []string { return requiredTools }
 
 // Crawl implements source.Crawler.
-func (c Crawler) Crawl(ctx context.Context, rt source.Runtime, emit source.EmitFunc) error {
+func (c Crawler) Crawl(ctx context.Context, rt source.Runtime, emit source.EmitFunc) (bool, error) {
 	result, err := rt.Call(ctx, "gitea_list_tree", map[string]any{})
 	if err != nil {
-		return err
+		return false, err
 	}
 	body, _ := result.Data.(map[string]any)
 	entries, _ := body["tree"].([]any)
+	// The Gitea server itself may have truncated the tree listing (a very
+	// large repository), independent of our own maxFiles cap below — either
+	// way this run did not see the whole repository.
+	truncated, _ := body["truncated"].(bool)
 
 	fetched := 0
 	for _, raw := range entries {
 		if fetched >= maxFiles {
+			truncated = true
 			break
 		}
 		entry, _ := raw.(map[string]any)
@@ -76,10 +83,10 @@ func (c Crawler) Crawl(ctx context.Context, rt source.Runtime, emit source.EmitF
 		}
 		fetched++
 		if err := c.fetchFile(ctx, rt, path, sha, dialect, emit); err != nil {
-			return err
+			return false, err
 		}
 	}
-	return nil
+	return truncated, nil
 }
 
 // fetchFile reads one blob's content. A fetch or decode failure degrades to

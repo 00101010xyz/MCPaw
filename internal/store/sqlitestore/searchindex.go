@@ -2,7 +2,9 @@ package sqlitestore
 
 import (
 	"context"
+	"database/sql"
 	"encoding/binary"
+	"errors"
 	"math"
 	"strings"
 	"time"
@@ -38,11 +40,15 @@ func (r *searchIndexRepo) ClearInstance(ctx context.Context, instanceID string) 
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.ExecContext(ctx, `DELETE FROM index_chunks_fts WHERE instance_id = ?`, instanceID); err != nil {
-		return translate(err, "clear search index")
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM index_chunks WHERE instance_id = ?`, instanceID); err != nil {
-		return translate(err, "clear search index")
+	for _, stmt := range []string{
+		`DELETE FROM index_chunks_fts WHERE instance_id = ?`,
+		`DELETE FROM index_chunks WHERE instance_id = ?`,
+		`DELETE FROM index_documents WHERE instance_id = ?`,
+		`DELETE FROM index_meta WHERE instance_id = ?`,
+	} {
+		if _, err := tx.ExecContext(ctx, stmt, instanceID); err != nil {
+			return translate(err, "clear search index")
+		}
 	}
 	return translate(tx.Commit(), "clear search index")
 }
@@ -88,6 +94,62 @@ func (r *searchIndexRepo) InsertChunks(ctx context.Context, instanceID string, c
 		}
 	}
 	return translate(tx.Commit(), "insert index chunks")
+}
+
+// DeleteDocumentChunks removes every chunk belonging to one document. The
+// FTS table carries no item_key/attachment_key of its own (see the migration
+// comment), so its rows have to be found by chunk ID rather than filtered
+// directly — the same reason ClearInstance can filter FTS by instance_id
+// alone but this narrower delete cannot.
+func (r *searchIndexRepo) DeleteDocumentChunks(ctx context.Context, instanceID, itemKey, attachmentKey string) error {
+	tx, err := r.write.BeginTx(ctx, nil)
+	if err != nil {
+		return translate(err, "delete document chunks")
+	}
+	defer tx.Rollback()
+
+	// A closure so rows is closed (deferred) before the transaction issues
+	// any further statement on the same connection — the caller below must
+	// not still be holding this result set open.
+	ids, err := func() ([]int64, error) {
+		rows, err := tx.QueryContext(ctx,
+			`SELECT id FROM index_chunks WHERE instance_id = ? AND item_key = ? AND attachment_key = ?`,
+			instanceID, itemKey, attachmentKey)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		var ids []int64
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				return nil, err
+			}
+			ids = append(ids, id)
+		}
+		return ids, rows.Err()
+	}()
+	if err != nil {
+		return translate(err, "delete document chunks")
+	}
+
+	deleteFTS, err := tx.PrepareContext(ctx, `DELETE FROM index_chunks_fts WHERE chunk_id = ?`)
+	if err != nil {
+		return translate(err, "delete document chunks")
+	}
+	defer deleteFTS.Close()
+	for _, id := range ids {
+		if _, err := deleteFTS.ExecContext(ctx, id); err != nil {
+			return translate(err, "delete document chunks")
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM index_chunks WHERE instance_id = ? AND item_key = ? AND attachment_key = ?`,
+		instanceID, itemKey, attachmentKey); err != nil {
+		return translate(err, "delete document chunks")
+	}
+	return translate(tx.Commit(), "delete document chunks")
 }
 
 func (r *searchIndexRepo) CountChunks(ctx context.Context, instanceID string) (int, error) {
@@ -148,6 +210,82 @@ func (r *searchIndexRepo) BM25Search(ctx context.Context, instanceID, query stri
 		out = append(out, id)
 	}
 	return out, translate(rows.Err(), "bm25 search")
+}
+
+func (r *searchIndexRepo) ListDocuments(ctx context.Context, instanceID string) ([]domain.IndexDocument, error) {
+	rows, err := r.read.QueryContext(ctx,
+		`SELECT item_key, attachment_key, content_hash, chunk_count, updated_at
+		 FROM index_documents WHERE instance_id = ?`, instanceID)
+	if err != nil {
+		return nil, translate(err, "list index documents")
+	}
+	defer rows.Close()
+
+	var out []domain.IndexDocument
+	for rows.Next() {
+		var d domain.IndexDocument
+		var updatedAt string
+		if err := rows.Scan(&d.ItemKey, &d.AttachmentKey, &d.ContentHash, &d.ChunkCount, &updatedAt); err != nil {
+			return nil, translate(err, "scan index document")
+		}
+		d.InstanceID = instanceID
+		if d.UpdatedAt, err = parseTime(updatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, translate(rows.Err(), "list index documents")
+}
+
+func (r *searchIndexRepo) UpsertDocument(ctx context.Context, doc domain.IndexDocument) error {
+	_, err := r.write.ExecContext(ctx,
+		`INSERT INTO index_documents (instance_id, item_key, attachment_key, content_hash, chunk_count, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT (instance_id, item_key, attachment_key)
+		 DO UPDATE SET content_hash = excluded.content_hash, chunk_count = excluded.chunk_count,
+		               updated_at = excluded.updated_at`,
+		doc.InstanceID, doc.ItemKey, doc.AttachmentKey, doc.ContentHash, doc.ChunkCount, formatTime(doc.UpdatedAt))
+	return translate(err, "upsert index document")
+}
+
+func (r *searchIndexRepo) DeleteDocument(ctx context.Context, instanceID, itemKey, attachmentKey string) error {
+	_, err := r.write.ExecContext(ctx,
+		`DELETE FROM index_documents WHERE instance_id = ? AND item_key = ? AND attachment_key = ?`,
+		instanceID, itemKey, attachmentKey)
+	return translate(err, "delete index document")
+}
+
+func (r *searchIndexRepo) GetMeta(ctx context.Context, instanceID string) (domain.IndexMeta, bool, error) {
+	var (
+		m         domain.IndexMeta
+		updatedAt string
+	)
+	err := r.read.QueryRowContext(ctx,
+		`SELECT embedder_model, embedder_dimension, updated_at FROM index_meta WHERE instance_id = ?`,
+		instanceID).Scan(&m.EmbedderModel, &m.EmbedderDimension, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.IndexMeta{}, false, nil
+	}
+	if err != nil {
+		return domain.IndexMeta{}, false, translate(err, "get index meta")
+	}
+	m.InstanceID = instanceID
+	if m.UpdatedAt, err = parseTime(updatedAt); err != nil {
+		return domain.IndexMeta{}, false, err
+	}
+	return m, true, nil
+}
+
+func (r *searchIndexRepo) SetMeta(ctx context.Context, meta domain.IndexMeta) error {
+	_, err := r.write.ExecContext(ctx,
+		`INSERT INTO index_meta (instance_id, embedder_model, embedder_dimension, updated_at)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT (instance_id)
+		 DO UPDATE SET embedder_model = excluded.embedder_model,
+		               embedder_dimension = excluded.embedder_dimension,
+		               updated_at = excluded.updated_at`,
+		meta.InstanceID, meta.EmbedderModel, meta.EmbedderDimension, formatTime(meta.UpdatedAt))
+	return translate(err, "set index meta")
 }
 
 // isMatchSyntaxError reports whether err is SQLite/FTS5 rejecting the MATCH

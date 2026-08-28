@@ -21,11 +21,14 @@ func init() {
 
 // Safety caps for one crawl: bound how long and how much a single
 // operator-triggered reindex can consume against a personal library.
-const (
-	pageSize      = 100
-	maxItems      = 2000
-	childrenLimit = 50
+// pageSize and maxItems are vars, not consts, so a test can lower them
+// rather than construct thousands of fixture items to exercise the cap.
+var (
+	pageSize = 100
+	maxItems = 2000
 )
+
+const childrenLimit = 50
 
 var requiredTools = []string{
 	"zotero_list_top_items",
@@ -41,16 +44,17 @@ type Crawler struct{}
 func (Crawler) RequiredTools() []string { return requiredTools }
 
 // Crawl implements source.Crawler.
-func (c Crawler) Crawl(ctx context.Context, rt source.Runtime, emit source.EmitFunc) error {
+func (c Crawler) Crawl(ctx context.Context, rt source.Runtime, emit source.EmitFunc) (bool, error) {
 	start := 0
-	for processed := 0; processed < maxItems; {
+	processed := 0
+	for processed < maxItems {
 		result, err := rt.Call(ctx, "zotero_list_top_items", map[string]any{"limit": pageSize, "start": start})
 		if err != nil {
-			return err
+			return false, err
 		}
 		items, _ := result.Data.([]any)
 		if len(items) == 0 {
-			break
+			return false, nil
 		}
 		for _, raw := range items {
 			item, _ := raw.(map[string]any)
@@ -59,16 +63,18 @@ func (c Crawler) Crawl(ctx context.Context, rt source.Runtime, emit source.EmitF
 				continue
 			}
 			if err := c.crawlItem(ctx, rt, key, emit); err != nil {
-				return err
+				return false, err
 			}
 			processed++
 		}
 		if len(items) < pageSize {
-			break
+			return false, nil
 		}
 		start += pageSize
 	}
-	return nil
+	// The loop exited because processed reached maxItems while a full page
+	// was still coming back — there is more library left unwalked.
+	return true, nil
 }
 
 // crawlItem visits one top-level item's children and emits one document per

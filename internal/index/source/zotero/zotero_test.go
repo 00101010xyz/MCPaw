@@ -93,7 +93,7 @@ func collect(t *testing.T, rt source.Runtime) []struct {
 		Doc  source.Document
 		Text string
 	}
-	err := Crawler{}.Crawl(context.Background(), rt, func(_ context.Context, doc source.Document, text string) error {
+	_, err := Crawler{}.Crawl(context.Background(), rt, func(_ context.Context, doc source.Document, text string) error {
 		got = append(got, struct {
 			Doc  source.Document
 			Text string
@@ -256,6 +256,42 @@ func joinJSON(items []string) string {
 		out += s
 	}
 	return out
+}
+
+// The indexer's pruning logic trusts "truncated" to mean "this run did not
+// see the whole library" — it must be true whenever maxItems is hit while a
+// full page is still coming back, since there may be more beyond it.
+func TestCrawlReportsTruncatedWhenMaxItemsHit(t *testing.T) {
+	oldPageSize, oldMaxItems := pageSize, maxItems
+	pageSize, maxItems = 2, 4
+	t.Cleanup(func() { pageSize, maxItems = oldPageSize, oldMaxItems })
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/users/0/items/top", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		start := r.URL.Query().Get("start")
+		// Always answer with a full page: an endless library, from the
+		// crawler's point of view, so the only way the loop stops is by
+		// hitting maxItems.
+		fmt.Fprintf(w, `[{"key":"ITEM%s0"},{"key":"ITEM%s1"}]`, start, start)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	// children/fulltext are deliberately unregistered; a 404 there just
+	// means an empty-text visit, irrelevant to what this test checks.
+
+	var emitCount int
+	truncated, err := Crawler{}.Crawl(context.Background(), runtimeFor(t, srv),
+		func(context.Context, source.Document, string) error { emitCount++; return nil })
+	if err != nil {
+		t.Fatalf("Crawl: %v", err)
+	}
+	if !truncated {
+		t.Error("truncated = false, want true: maxItems was hit against an endless page sequence")
+	}
+	if emitCount < maxItems {
+		t.Errorf("emitCount = %d, want at least maxItems (%d)", emitCount, maxItems)
+	}
 }
 
 func TestRequiredToolsMatchesTheToolsActuallyCalled(t *testing.T) {

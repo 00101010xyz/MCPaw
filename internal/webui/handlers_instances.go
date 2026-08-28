@@ -209,19 +209,34 @@ func (s *Server) PostInstanceEmbedder(w http.ResponseWriter, r *http.Request) {
 	redirect(w, r, "/instances/"+instanceID)
 }
 
-// PostInstanceReindex starts a background rebuild of an instance's semantic
-// search index.
+// PostInstanceReindex starts a background incremental update of an
+// instance's semantic search index — a document whose content has not
+// changed since the last run is left alone.
 func (s *Server) PostInstanceReindex(w http.ResponseWriter, r *http.Request) {
+	s.startReindex(w, r, service.ReindexUpdate,
+		"Update started. This can take a while for a large library; refresh this page to check progress.")
+}
+
+// PostInstanceReindexRebuild starts a background full rebuild of an
+// instance's semantic search index — every document is re-fetched,
+// re-chunked and re-embedded regardless of whether it changed. Needed after
+// switching the embedder model, or to recover from a suspect index.
+func (s *Server) PostInstanceReindexRebuild(w http.ResponseWriter, r *http.Request) {
+	s.startReindex(w, r, service.ReindexRebuild,
+		"Rebuild started. This can take a while for a large library; refresh this page to check progress.")
+}
+
+func (s *Server) startReindex(w http.ResponseWriter, r *http.Request, mode service.ReindexMode, successMessage string) {
 	instanceID := r.PathValue("id")
 	if s.indexer == nil {
 		s.flashError(r, "Semantic search is not available on this deployment.")
 		redirect(w, r, "/instances/"+instanceID)
 		return
 	}
-	if err := s.indexer.Reindex(r.Context(), s.actor(r), instanceID); err != nil {
+	if err := s.indexer.Reindex(r.Context(), s.actor(r), instanceID, mode); err != nil {
 		s.flashError(r, "%s", errorMessage(err))
 	} else {
-		s.flashSuccess(r, "Reindexing started. This can take a while for a large library; refresh this page to check progress.")
+		s.flashSuccess(r, "%s", successMessage)
 	}
 	redirect(w, r, "/instances/"+instanceID)
 }

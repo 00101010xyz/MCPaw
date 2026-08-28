@@ -95,7 +95,7 @@ type emitted struct {
 func collect(t *testing.T, rt source.Runtime) []emitted {
 	t.Helper()
 	var got []emitted
-	err := Crawler{}.Crawl(context.Background(), rt, func(_ context.Context, doc source.Document, text string) error {
+	_, err := Crawler{}.Crawl(context.Background(), rt, func(_ context.Context, doc source.Document, text string) error {
 		got = append(got, emitted{doc, text})
 		return nil
 	})
@@ -225,6 +225,56 @@ func TestCrawlToleratesMalformedBase64(t *testing.T) {
 	}
 	if got[0].Text != "" {
 		t.Errorf("text = %q, want empty on a decode failure", got[0].Text)
+	}
+}
+
+// The indexer's pruning logic trusts "truncated" to mean "this run did not
+// see the whole repository" — it must be true whenever the Gitea server
+// itself truncated the tree listing, independent of our own maxFiles cap.
+func TestCrawlReportsTruncatedFromServerFlag(t *testing.T) {
+	srv := jsonHandler(t, map[string]string{
+		"/api/v1/repos/octocat/thesis/git/trees/main":     `{"tree":[{"path":"a.md","type":"blob","sha":"abc11111"}],"truncated":true}`,
+		"/api/v1/repos/octocat/thesis/git/blobs/abc11111": blobBody("# A\n\nBody."),
+	})
+
+	truncated, err := Crawler{}.Crawl(context.Background(), runtimeFor(t, srv), func(context.Context, source.Document, string) error { return nil })
+	if err != nil {
+		t.Fatalf("Crawl: %v", err)
+	}
+	if !truncated {
+		t.Error("truncated = false, want true: the server's own truncated flag was set")
+	}
+}
+
+func TestCrawlReportsTruncatedWhenMaxFilesHit(t *testing.T) {
+	old := maxFiles
+	maxFiles = 2
+	t.Cleanup(func() { maxFiles = old })
+
+	tree := `{"tree":[
+		{"path":"a.md","type":"blob","sha":"aaaaaaaa"},
+		{"path":"b.md","type":"blob","sha":"bbbbbbbb"},
+		{"path":"c.md","type":"blob","sha":"cccccccc"}
+	],"truncated":false}`
+	srv := jsonHandler(t, map[string]string{
+		"/api/v1/repos/octocat/thesis/git/trees/main":     tree,
+		"/api/v1/repos/octocat/thesis/git/blobs/aaaaaaaa": blobBody("# A\n\nBody."),
+		"/api/v1/repos/octocat/thesis/git/blobs/bbbbbbbb": blobBody("# B\n\nBody."),
+	})
+
+	var emitCount int
+	truncated, err := Crawler{}.Crawl(context.Background(), runtimeFor(t, srv), func(context.Context, source.Document, string) error {
+		emitCount++
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Crawl: %v", err)
+	}
+	if !truncated {
+		t.Error("truncated = false, want true: maxFiles was lowered to 2 against a 3-file tree")
+	}
+	if emitCount != 2 {
+		t.Errorf("emitCount = %d, want 2 (maxFiles)", emitCount)
 	}
 }
 

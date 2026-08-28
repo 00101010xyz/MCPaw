@@ -3,6 +3,8 @@ package webui
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -188,6 +190,92 @@ func TestInstanceDetailRendersWithEmbedderAPIKeySet(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "embedderApiKey") {
 		t.Fatal("response does not mention embedderApiKey")
+	}
+}
+
+// Once an index actually holds chunks, the "Semantic search" panel grows a
+// second button (Rebuild from scratch) and a last-run stats line — neither
+// exercised by the empty-index case above, so this drives a real reindex
+// through the harness's real Indexer to hit that branch.
+func TestInstanceDetailRendersAfterAnIndexIsBuilt(t *testing.T) {
+	h := newHarness(t)
+	admin := h.createAdmin(t, "admin@example.com")
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/users/0/items/top", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"key":"ITEM0001"}]`)
+	})
+	mux.HandleFunc("/api/users/0/items/ITEM0001/children", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"key":"ATT00001","data":{"itemType":"attachment","contentType":"application/pdf"}}]`)
+	})
+	mux.HandleFunc("/api/users/0/items/ATT00001/fulltext", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"content":"some real extracted text, long enough to form a chunk."}`)
+	})
+	zotero := httptest.NewServer(mux)
+	t.Cleanup(zotero.Close)
+
+	embedder := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Input []string `json:"input"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		vectors := make([][]float32, len(req.Input))
+		for i := range vectors {
+			vectors[i] = []float32{1, 2, 3}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"embeddings": vectors})
+	}))
+	t.Cleanup(embedder.Close)
+
+	ctx := context.Background()
+	inst, err := h.instances.Create(ctx, service.SystemActor(), service.CreateInput{
+		Name: "Built Zotero", Slug: "built-zotero", ConnectorID: "zotero-local",
+		BaseURL: zotero.URL, Enabled: true, AllowPrivateNetwork: true, EmbedderURL: embedder.URL,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	for _, tool := range []string{"zotero_list_top_items", "zotero_get_item_children", "zotero_get_item_fulltext"} {
+		if err := h.instances.SetToolEnabled(ctx, service.SystemActor(), inst.ID, tool, true); err != nil {
+			t.Fatalf("SetToolEnabled(%s): %v", tool, err)
+		}
+	}
+	if err := h.indexer.Reindex(ctx, service.SystemActor(), inst.ID, service.ReindexUpdate); err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		status, count, err := h.indexer.Status(ctx, inst.ID)
+		if err != nil {
+			t.Fatalf("Status: %v", err)
+		}
+		if !status.Running && count > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("reindex did not finish in time: %+v", status)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	rec := httptest.NewRecorder()
+	h.server.GetInstance(rec, instanceDetailRequest(admin, inst.ID))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Update index") {
+		t.Error("response does not offer Update index once the index has chunks")
+	}
+	if !strings.Contains(body, "Rebuild from scratch") {
+		t.Error("response does not offer Rebuild from scratch once the index has chunks")
+	}
+	if !strings.Contains(body, "chunks written") {
+		t.Error("response does not show the last-run stats line")
 	}
 }
 

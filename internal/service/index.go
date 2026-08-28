@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -45,10 +47,19 @@ type IndexStatus struct {
 	// not it produced any indexable text — a rough progress signal, not an
 	// exact count of anything more specific than "documents visited".
 	ItemsProcessed int
-	ChunksIndexed  int
-	LastError      string
-	StartedAt      time.Time
-	FinishedAt     time.Time
+	// ChunksIndexed counts chunks actually (re)written this run — a document
+	// an "Update index" run recognised as unchanged contributes nothing
+	// here, which is the point: it says how much work this run actually did.
+	ChunksIndexed int
+	// DocumentsSkipped counts documents an "Update index" run recognised as
+	// unchanged (same content hash) and left alone.
+	DocumentsSkipped int
+	// DocumentsPruned counts documents that were indexed before but were not
+	// seen this crawl — deleted or renamed upstream — and so were removed.
+	DocumentsPruned int
+	LastError       string
+	StartedAt       time.Time
+	FinishedAt      time.Time
 }
 
 // SearchHit is one ranked result from a semantic search.
@@ -128,10 +139,34 @@ func (s *Indexer) Status(ctx context.Context, instanceID string) (IndexStatus, i
 	return *st, count, nil
 }
 
-// Reindex clears and rebuilds an instance's index from scratch, in the
-// background: a real library's worth of PDFs takes many embedding calls, far
-// longer than an operator should have to wait on an HTTP response for.
-func (s *Indexer) Reindex(ctx context.Context, actor Actor, instanceID string) error {
+// ReindexMode selects how Reindex treats an instance's existing index.
+type ReindexMode int
+
+const (
+	// ReindexUpdate is the default, incremental mode: a document whose
+	// content hash has not changed since the last run is left untouched —
+	// not re-chunked, not re-embedded — and a document that existed before
+	// but was not seen this crawl (deleted or renamed upstream) is pruned,
+	// as long as the crawl was not truncated. It refuses to run at all if
+	// the instance's embedder model has changed since the index was built,
+	// since mixing vectors from two models degrades silently to noise
+	// rather than erroring.
+	ReindexUpdate ReindexMode = iota
+	// ReindexRebuild clears the instance's index first and rebuilds it from
+	// scratch, embedding every document regardless of whether its content
+	// has changed. It is the only mode that may change the embedder model
+	// an index is built with.
+	ReindexRebuild
+)
+
+// docKey identifies one document within an instance's index, for diffing a
+// fresh crawl against what is already stored.
+type docKey struct{ itemKey, attachmentKey string }
+
+// Reindex builds or updates an instance's index in the background: a real
+// library's worth of documents takes many embedding calls, far longer than
+// an operator should have to wait on an HTTP response for.
+func (s *Indexer) Reindex(ctx context.Context, actor Actor, instanceID string, mode ReindexMode) error {
 	resolved, err := s.instances.ResolveByID(ctx, instanceID)
 	if err != nil {
 		return err
@@ -148,12 +183,16 @@ func (s *Indexer) Reindex(ctx context.Context, actor Actor, instanceID string) e
 	s.status[instanceID] = &IndexStatus{Running: true, StartedAt: time.Now()}
 	s.mu.Unlock()
 
-	s.audit.Success(ctx, actor, domain.ActionIndexReindex, "instance", instanceID, map[string]any{"action": "started"})
-	go s.runReindex(instanceID)
+	action := "update"
+	if mode == ReindexRebuild {
+		action = "rebuild"
+	}
+	s.audit.Success(ctx, actor, domain.ActionIndexReindex, "instance", instanceID, map[string]any{"action": "started", "mode": action})
+	go s.runReindex(instanceID, mode)
 	return nil
 }
 
-func (s *Indexer) runReindex(instanceID string) {
+func (s *Indexer) runReindex(instanceID string, mode ReindexMode) {
 	ctx, cancel := context.WithTimeout(context.Background(), reindexTimeout)
 	defer cancel()
 	defer s.finish(instanceID)
@@ -185,32 +224,126 @@ func (s *Indexer) runReindex(instanceID string) {
 		}
 	}
 
-	if err := s.repo.ClearInstance(ctx, instanceID); err != nil {
-		s.fail(instanceID, err)
-		return
+	effectiveModel := resolved.Instance.EmbedderModel
+	if effectiveModel == "" {
+		effectiveModel = index.DefaultEmbedder
+	}
+
+	existing := map[docKey]domain.IndexDocument{}
+	if mode == ReindexRebuild {
+		if err := s.repo.ClearInstance(ctx, instanceID); err != nil {
+			s.fail(instanceID, err)
+			return
+		}
+	} else {
+		meta, ok, err := s.repo.GetMeta(ctx, instanceID)
+		if err != nil {
+			s.fail(instanceID, err)
+			return
+		}
+		if ok && meta.EmbedderModel != effectiveModel {
+			s.fail(instanceID, fmt.Errorf("%w: the embedder model changed from %q to %q since this index was built; use Rebuild from scratch instead of Update",
+				domain.ErrInvalidInput, meta.EmbedderModel, effectiveModel))
+			return
+		}
+		docs, err := s.repo.ListDocuments(ctx, instanceID)
+		if err != nil {
+			s.fail(instanceID, err)
+			return
+		}
+		for _, d := range docs {
+			existing[docKey{d.ItemKey, d.AttachmentKey}] = d
+		}
 	}
 
 	rt := source.Runtime{
 		Executor: s.instances.Executor(), Target: target,
 		Connector: resolved.Connector, EnabledTools: resolved.EnabledTools,
 	}
-	err = crawler.Crawl(ctx, rt, func(ctx context.Context, doc source.Document, text string) error {
+	seen := map[docKey]bool{}
+	dimension := 0
+	truncated, err := crawler.Crawl(ctx, rt, func(ctx context.Context, doc source.Document, text string) error {
+		key := docKey{doc.ItemKey, doc.AttachmentKey}
+		seen[key] = true
 		s.addItem(instanceID)
-		if strings.TrimSpace(text) != "" {
-			s.indexDocument(ctx, resolved, target, instanceID, doc, text)
+		if strings.TrimSpace(text) == "" {
+			return nil
+		}
+
+		hash := hashText(text)
+		if prior, ok := existing[key]; ok {
+			if prior.ContentHash == hash {
+				s.addSkipped(instanceID)
+				return nil
+			}
+			if err := s.repo.DeleteDocumentChunks(ctx, instanceID, doc.ItemKey, doc.AttachmentKey); err != nil {
+				s.logger.Warn("index: clearing a changed document's old chunks failed",
+					slog.String("attachment", doc.AttachmentKey), slog.String("error", err.Error()))
+				return nil
+			}
+		}
+
+		chunkCount, chunkDim := s.indexDocument(ctx, resolved, target, instanceID, doc, text)
+		if chunkCount == 0 {
+			return nil
+		}
+		dimension = chunkDim
+		if err := s.repo.UpsertDocument(ctx, domain.IndexDocument{
+			InstanceID: instanceID, ItemKey: doc.ItemKey, AttachmentKey: doc.AttachmentKey,
+			ContentHash: hash, ChunkCount: chunkCount, UpdatedAt: time.Now(),
+		}); err != nil {
+			s.logger.Warn("index: recording document bookkeeping failed",
+				slog.String("attachment", doc.AttachmentKey), slog.String("error", err.Error()))
 		}
 		return nil
 	})
 	if err != nil {
 		s.fail(instanceID, err)
+		return
+	}
+
+	// Pruning trusts that the crawl saw everything: a truncated run's
+	// "unseen" documents may simply be ones it never reached, not ones
+	// deleted upstream, so treating them as deletions would be data loss.
+	if mode == ReindexUpdate && !truncated {
+		for key, doc := range existing {
+			if seen[key] {
+				continue
+			}
+			if err := s.repo.DeleteDocumentChunks(ctx, instanceID, doc.ItemKey, doc.AttachmentKey); err != nil {
+				s.logger.Warn("index: pruning a document's chunks failed",
+					slog.String("attachment", doc.AttachmentKey), slog.String("error", err.Error()))
+				continue
+			}
+			if err := s.repo.DeleteDocument(ctx, instanceID, doc.ItemKey, doc.AttachmentKey); err != nil {
+				s.logger.Warn("index: pruning a document's bookkeeping failed",
+					slog.String("attachment", doc.AttachmentKey), slog.String("error", err.Error()))
+				continue
+			}
+			s.addPruned(instanceID)
+		}
+	}
+
+	if dimension > 0 {
+		if err := s.repo.SetMeta(ctx, domain.IndexMeta{
+			InstanceID: instanceID, EmbedderModel: effectiveModel, EmbedderDimension: dimension, UpdatedAt: time.Now(),
+		}); err != nil {
+			s.logger.Warn("index: recording embedder meta failed", slog.String("error", err.Error()))
+		}
 	}
 }
 
-// indexDocument chunks, embeds and stores one document's text. This is the
-// part every source shares — chunking and embedding know nothing about
-// where the text came from — unlike the crawl itself, which is entirely
-// source-specific (see internal/index/source).
-func (s *Indexer) indexDocument(ctx context.Context, resolved *Resolved, target *engine.Target, instanceID string, doc source.Document, text string) {
+func hashText(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
+
+// indexDocument chunks, embeds and stores one document's text, returning how
+// many chunks it produced and their vector dimension (both 0 on failure).
+// This is the part every source shares — chunking and embedding know
+// nothing about where the text came from — unlike the crawl itself, which
+// is entirely source-specific (see internal/index/source).
+func (s *Indexer) indexDocument(ctx context.Context, resolved *Resolved, target *engine.Target, instanceID string, doc source.Document, text string) (chunkCount, dimension int) {
 	spans := chunkFor(doc, text)
 	if len(spans) > reindexMaxChunksPerFile {
 		spans = spans[:reindexMaxChunksPerFile]
@@ -227,7 +360,7 @@ func (s *Indexer) indexDocument(ctx context.Context, resolved *Resolved, target 
 			target.Secrets[index.EmbedderAPIKey], target.Policy, texts[i:end])
 		if err != nil {
 			s.logger.Warn("index: embedding failed", slog.String("attachment", doc.AttachmentKey), slog.String("error", err.Error()))
-			return
+			return 0, 0
 		}
 		for j, v := range vectors {
 			sp := spans[i+j]
@@ -238,13 +371,14 @@ func (s *Indexer) indexDocument(ctx context.Context, resolved *Resolved, target 
 		}
 	}
 	if len(chunks) == 0 {
-		return
+		return 0, 0
 	}
 	if err := s.repo.InsertChunks(ctx, instanceID, chunks); err != nil {
 		s.logger.Warn("index: storing chunks failed", slog.String("attachment", doc.AttachmentKey), slog.String("error", err.Error()))
-		return
+		return 0, 0
 	}
 	s.addChunks(instanceID, len(chunks))
+	return len(chunks), len(chunks[0].Embedding)
 }
 
 // chunkFor picks the splitter a document's crawler asked for. A source sets
@@ -271,6 +405,22 @@ func (s *Indexer) addChunks(instanceID string, n int) {
 	defer s.mu.Unlock()
 	if st := s.status[instanceID]; st != nil {
 		st.ChunksIndexed += n
+	}
+}
+
+func (s *Indexer) addSkipped(instanceID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if st := s.status[instanceID]; st != nil {
+		st.DocumentsSkipped++
+	}
+}
+
+func (s *Indexer) addPruned(instanceID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if st := s.status[instanceID]; st != nil {
+		st.DocumentsPruned++
 	}
 }
 

@@ -7,8 +7,8 @@ import (
 
 type stubCrawler struct{}
 
-func (stubCrawler) RequiredTools() []string                        { return nil }
-func (stubCrawler) Crawl(context.Context, Runtime, EmitFunc) error { return nil }
+func (stubCrawler) RequiredTools() []string                                { return nil }
+func (stubCrawler) Crawl(context.Context, Runtime, EmitFunc) (bool, error) { return false, nil }
 
 func TestRegisterAndGet(t *testing.T) {
 	Register("test-source-register-and-get", stubCrawler{})

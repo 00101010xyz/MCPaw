@@ -114,14 +114,34 @@
       {{else if .ChunkCount}}<span class="tag tag--ok">ready</span>
       {{else}}<span class="tag tag--off">not built</span>{{end}}
     </dd>
-    {{if not .Status.FinishedAt.IsZero}}<dt>Last run</dt><dd>{{formatTime .Status.FinishedAt}} — {{.Status.ItemsProcessed}} items, {{.Status.ChunksIndexed}} chunks</dd>{{end}}
+    {{if not .Status.FinishedAt.IsZero}}
+    <dt>Last run</dt>
+    <dd>
+      {{formatTime .Status.FinishedAt}} — {{.Status.ItemsProcessed}} examined,
+      {{.Status.ChunksIndexed}} chunks written{{if .Status.DocumentsSkipped}}, {{.Status.DocumentsSkipped}} unchanged{{end}}{{if .Status.DocumentsPruned}}, {{.Status.DocumentsPruned}} pruned{{end}}
+    </dd>
+    {{end}}
   </dl>
-  <form method="post" action="/instances/{{$inst.ID}}/reindex" class="inline">
-    <input type="hidden" name="csrf_token" value="{{$csrf}}">
-    <button type="submit" class="btn" {{if .Status.Running}}disabled{{end}}>
-      {{if .ChunkCount}}Rebuild index{{else}}Build index{{end}}
-    </button>
-  </form>
+  <div class="actions">
+    <form method="post" action="/instances/{{$inst.ID}}/reindex" class="inline">
+      <input type="hidden" name="csrf_token" value="{{$csrf}}">
+      <button type="submit" class="btn" {{if .Status.Running}}disabled{{end}}>
+        {{if .ChunkCount}}Update index{{else}}Build index{{end}}
+      </button>
+    </form>
+    {{if .ChunkCount}}
+    <form method="post" action="/instances/{{$inst.ID}}/reindex/rebuild" class="inline">
+      <input type="hidden" name="csrf_token" value="{{$csrf}}">
+      <button type="submit" class="btn" {{if .Status.Running}}disabled{{end}}>Rebuild from scratch</button>
+    </form>
+    {{end}}
+  </div>
+  <p class="hint">
+    Update only re-embeds documents whose content changed and removes ones no longer
+    found upstream. Rebuild re-embeds everything regardless — needed after changing
+    the embedder model above, since mixing vectors from two models silently breaks
+    search rather than erroring.
+  </p>
 </section>
 {{end}}
 

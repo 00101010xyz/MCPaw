@@ -126,3 +126,11 @@ instance-level setting, separate from the connector's own configuration),
 then use **Build index**. The tool is only advertised to clients once the
 index holds at least one chunk; leaving the embedder URL empty leaves the
 feature off entirely, with no other effect on the instance.
+
+Once an index exists, **Update index** re-fetches everything but only
+re-embeds a document whose content actually changed, and removes any
+document no longer found upstream — the routine action for keeping an index
+current. **Rebuild from scratch** re-embeds every document regardless,
+which is only needed after changing the embedder model (mixing vectors from
+two models silently breaks search rather than erroring, so switching models
+always requires a rebuild) or to recover from a suspect index.

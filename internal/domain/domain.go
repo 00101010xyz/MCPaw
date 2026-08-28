@@ -173,11 +173,11 @@ type ToolBinding struct {
 	Enabled    bool
 }
 
-// IndexChunk is one embedded, searchable slice of text extracted from an
-// attachment (a PDF or snapshot) belonging to a Zotero item, for the
-// semantic-search index. ItemKey identifies the parent library item;
-// AttachmentKey identifies the specific attachment the text came from, since
-// an item can carry more than one.
+// IndexChunk is one embedded, searchable slice of text extracted from a
+// document (e.g. a Zotero attachment or a Gitea file) for the semantic-search
+// index. ItemKey identifies the document's logical parent; AttachmentKey
+// identifies the specific document the text came from — for a source with no
+// such grouping, the two are equal.
 type IndexChunk struct {
 	ID            int64
 	InstanceID    string
@@ -189,9 +189,35 @@ type IndexChunk struct {
 	Text          string
 	// Embedding is the chunk's vector, in the dimensionality the configured
 	// embedder produced it in. Chunks from a different model or dimension
-	// count must never be compared against one another, which is why a
-	// reindex clears the whole instance rather than merging.
+	// count must never be compared against one another — see IndexMeta.
 	Embedding []float32
+}
+
+// IndexDocument is the incremental-reindex bookkeeping row for one document:
+// what its content hashed to and how many chunks it produced, the last time
+// it was indexed. An "Update index" run compares a freshly fetched
+// document's hash against this to decide whether re-chunking and
+// re-embedding it is necessary at all.
+type IndexDocument struct {
+	InstanceID    string
+	ItemKey       string
+	AttachmentKey string
+	ContentHash   string
+	ChunkCount    int
+	UpdatedAt     time.Time
+}
+
+// IndexMeta records which embedder model (and vector dimension) built an
+// instance's current index. An incremental "Update index" run must refuse to
+// proceed if the instance is now configured with a different model or
+// dimension than this — mixing vectors from two models degrades silently to
+// noise rather than erroring, so that case requires an explicit
+// "Rebuild from scratch" instead.
+type IndexMeta struct {
+	InstanceID        string
+	EmbedderModel     string
+	EmbedderDimension int
+	UpdatedAt         time.Time
 }
 
 // Token is a bearer credential presented by an MCP client. Only the SHA-256

@@ -73,7 +73,13 @@ type Crawler interface {
 	// "enable this tool" error instead of a crawl that fails partway through.
 	RequiredTools() []string
 	// Crawl walks the library and calls emit for every candidate document.
-	Crawl(ctx context.Context, rt Runtime, emit EmitFunc) error
+	// truncated reports whether the crawl may have stopped before covering
+	// every document — its own safety cap, or the upstream API's own
+	// truncation of a large listing. The caller must treat that as "this run
+	// does not know the full current state" and skip pruning anything it
+	// didn't see, since an unseen document might simply be one the crawl
+	// never reached rather than one deleted upstream.
+	Crawl(ctx context.Context, rt Runtime, emit EmitFunc) (truncated bool, err error)
 }
 
 var registry = map[string]Crawler{}

@@ -167,8 +167,8 @@ func (s *Indexer) runReindex(instanceID string) {
 		s.fail(instanceID, err)
 		return
 	}
-	if target.Vars[index.EmbedderURL] == "" {
-		s.fail(instanceID, fmt.Errorf("set the %q variable on this instance before indexing", index.EmbedderURL))
+	if resolved.Instance.EmbedderURL == "" {
+		s.fail(instanceID, fmt.Errorf("set the embedder URL on this instance before indexing"))
 		return
 	}
 
@@ -287,7 +287,7 @@ func (s *Indexer) indexAttachment(ctx context.Context, executor *engine.Executor
 	var chunks []domain.IndexChunk
 	for i := 0; i < len(texts); i += reindexEmbedBatch {
 		end := min(i+reindexEmbedBatch, len(texts))
-		vectors, err := s.embedder.Embed(ctx, target.Vars[index.EmbedderURL], target.Vars[index.EmbedderModel],
+		vectors, err := s.embedder.Embed(ctx, resolved.Instance.EmbedderURL, resolved.Instance.EmbedderModel,
 			target.Secrets[index.EmbedderAPIKey], target.Policy, texts[i:end])
 		if err != nil {
 			s.logger.Warn("index: embedding failed", slog.String("attachment", attachmentKey), slog.String("error", err.Error()))
@@ -367,11 +367,11 @@ func (s *Indexer) Search(ctx context.Context, instanceID, query string, limit in
 	if err != nil {
 		return nil, err
 	}
-	if target.Vars[index.EmbedderURL] == "" {
+	if resolved.Instance.EmbedderURL == "" {
 		return nil, fmt.Errorf("semantic search is not configured for this instance")
 	}
 
-	vectors, err := s.embedder.Embed(ctx, target.Vars[index.EmbedderURL], target.Vars[index.EmbedderModel],
+	vectors, err := s.embedder.Embed(ctx, resolved.Instance.EmbedderURL, resolved.Instance.EmbedderModel,
 		target.Secrets[index.EmbedderAPIKey], target.Policy, []string{query})
 	if err != nil {
 		return nil, err

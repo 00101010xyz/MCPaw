@@ -125,10 +125,11 @@ consume than `zotero_get_item_fulltext`, and more targeted than
 `zotero_search_items`'s metadata search. It needs a local embeddings sidecar
 (e.g. [Ollama](https://ollama.com) running an embedding model such as
 `nomic-embed-text`, exposed at `http://host.docker.internal:11434`) — set
-that as the instance's `embedderUrl` variable, then use **Build index** on
-the instance page. The tool is only advertised to clients once the index
-holds at least one chunk; leaving `embedderUrl` empty leaves the feature off
-entirely, with no other effect on the instance.
+that as the **embedder URL** in the instance's "Semantic search" panel (an
+instance-level setting, separate from the connector's own configuration),
+then use **Build index**. The tool is only advertised to clients once the
+index holds at least one chunk; leaving the embedder URL empty leaves the
+feature off entirely, with no other effect on the instance.
 
 ## Adding a connector
 

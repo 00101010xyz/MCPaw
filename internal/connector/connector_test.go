@@ -149,9 +149,8 @@ func TestZoteroConnectorShape(t *testing.T) {
 		}
 	}
 
-	// Every declared secret (the Web API key, the embedder sidecar's token)
-	// is optional: the connector must keep working, unauthenticated, against
-	// the local API with nothing configured at all.
+	// Every declared secret is optional: the connector must keep working,
+	// unauthenticated, against the local API with nothing configured at all.
 	for _, secret := range zotero.Secrets() {
 		if secret.Required {
 			t.Errorf("secret %s must be optional", secret.Name)

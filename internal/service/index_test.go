@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/00101010xyz/mcpaw/internal/domain"
-	"github.com/00101010xyz/mcpaw/internal/index"
 )
 
 // fakeZoteroServer serves the three endpoints the indexer crawls: one
@@ -71,10 +70,7 @@ func createIndexableZoteroInstance(t *testing.T, env *testEnv, zoteroURL, embedd
 	ctx := context.Background()
 	in := zoteroCreateInput("indexable")
 	in.BaseURL = zoteroURL
-	in.Variables = map[string]string{
-		"userId":          "0",
-		index.EmbedderURL: embedderURL,
-	}
+	in.EmbedderURL = embedderURL
 	inst, err := env.Instances.Create(ctx, systemActor(), in)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -260,7 +256,7 @@ func TestIndexerReindexRequiresEnabledTools(t *testing.T) {
 
 	in := zoteroCreateInput("tools-disabled")
 	in.BaseURL = zotero.URL
-	in.Variables = map[string]string{"userId": "0", index.EmbedderURL: embedder.URL}
+	in.EmbedderURL = embedder.URL
 	inst, err := env.Instances.Create(ctx, systemActor(), in)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -299,7 +295,7 @@ func TestIndexerSearchOnEmptyIndexReturnsNoHitsNotError(t *testing.T) {
 	ctx := context.Background()
 
 	in := zoteroCreateInput("search-empty-index")
-	in.Variables = map[string]string{"userId": "0", index.EmbedderURL: embedder.URL}
+	in.EmbedderURL = embedder.URL
 	inst, err := env.Instances.Create(ctx, systemActor(), in)
 	if err != nil {
 		t.Fatalf("Create: %v", err)

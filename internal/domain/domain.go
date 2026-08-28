@@ -127,6 +127,20 @@ type Instance struct {
 	// then gets rejected as the Host header unless overridden here.
 	HostHeaderOverride string
 
+	// EmbedderURL and EmbedderModel configure the semantic-search embedding
+	// sidecar for this instance (see internal/index). They are deliberately
+	// instance-level settings rather than connector variables: which
+	// documents to index and how to embed them is a platform feature layered
+	// on top of a connector, not part of the API the connector describes, so
+	// it must not appear in — or require editing — the manifest. Leaving
+	// EmbedderURL empty leaves semantic search off entirely, with no other
+	// effect on the instance. The API key (if the sidecar needs one) is
+	// stored the same way as any other instance secret, under the reserved
+	// name index.EmbedderAPIKey — reserved rather than connector-declared,
+	// for the same reason.
+	EmbedderURL   string
+	EmbedderModel string
+
 	TimeoutMS        int
 	RateLimitPerMin  int
 	MaxConcurrent    int

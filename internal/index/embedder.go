@@ -10,14 +10,11 @@ import (
 	"github.com/00101010xyz/mcpaw/internal/upstream"
 )
 
-// EmbedderURL, EmbedderModel and EmbedderAPIKey are the instance
-// variable/secret names the Zotero connector declares for configuring the
-// embedding sidecar. They are ordinary connector variables and secrets, not
-// a separate configuration path, so they reuse the existing sealing,
-// validation and web UI.
+// EmbedderAPIKey is the reserved instance secret name used to store the
+// embedder sidecar's API key, when it needs one. It is reserved rather than
+// declared by any connector manifest — see domain.Instance.EmbedderURL for
+// why the embedder configuration lives at the instance level instead.
 const (
-	EmbedderURL     = "embedderUrl"
-	EmbedderModel   = "embedderModel"
 	EmbedderAPIKey  = "embedderApiKey"
 	DefaultEmbedder = "nomic-embed-text"
 )

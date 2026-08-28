@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"github.com/00101010xyz/mcpaw/internal/domain"
 	"github.com/00101010xyz/mcpaw/internal/engine"
 	"github.com/00101010xyz/mcpaw/internal/httpx"
+	"github.com/00101010xyz/mcpaw/internal/index"
 	"github.com/00101010xyz/mcpaw/internal/secrets"
 	"github.com/00101010xyz/mcpaw/internal/service"
 	"github.com/00101010xyz/mcpaw/internal/store/sqlitestore"
@@ -34,6 +36,7 @@ type harness struct {
 	connectors *service.Connectors
 	tokens     *service.Tokens
 	audit      *service.Audit
+	indexer    *service.Indexer
 }
 
 func newHarness(t *testing.T) *harness {
@@ -77,10 +80,14 @@ func newHarness(t *testing.T) *harness {
 	instances := service.NewInstances(service.InstancesConfig{
 		Repo: repos.Instances(), Connectors: connectors, Sealer: sealer, Executor: executor, Audit: audit,
 	})
+	indexer := service.NewIndexer(service.IndexerConfig{
+		Repo: repos.SearchIndex(), Instances: instances, Audit: audit,
+		Embedder: &index.Embedder{Client: executor.Client()}, Logger: logger,
+	})
 
 	srv, err := New(Config{
 		Users: users, Sessions: sessions, Instances: instances, Connectors: connectors,
-		Tokens: tokens, Audit: audit, Logger: logger, Version: "test",
+		Tokens: tokens, Audit: audit, Indexer: indexer, Logger: logger, Version: "test",
 	})
 	if err != nil {
 		t.Fatalf("webui.New: %v", err)
@@ -88,7 +95,7 @@ func newHarness(t *testing.T) *harness {
 
 	return &harness{
 		server: srv, users: users, sessions: sessions,
-		instances: instances, connectors: connectors, tokens: tokens, audit: audit,
+		instances: instances, connectors: connectors, tokens: tokens, audit: audit, indexer: indexer,
 	}
 }
 
@@ -157,6 +164,70 @@ func TestEveryPageRendersForAnAuthenticatedAdmin(t *testing.T) {
 				t.Fatalf("response does not look like a rendered page: %.200s", rec.Body.String())
 			}
 		})
+	}
+}
+
+// The embedder API key row renders differently once a key is set (a
+// "set" tag and a Remove button appear) — the branch the base
+// TestEveryPageRendersForAnAuthenticatedAdmin case above never exercises,
+// since it never sets one.
+func TestInstanceDetailRendersWithEmbedderAPIKeySet(t *testing.T) {
+	h := newHarness(t)
+	admin := h.createAdmin(t, "admin@example.com")
+	inst := h.createInstance(t, "My Zotero", "zotero-key-set")
+
+	if err := h.instances.SetSecret(context.Background(), service.SystemActor(), inst.ID, index.EmbedderAPIKey, "sk-test-value"); err != nil {
+		t.Fatalf("SetSecret: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	h.server.GetInstance(rec, instanceDetailRequest(admin, inst.ID))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "embedderApiKey") {
+		t.Fatal("response does not mention embedderApiKey")
+	}
+}
+
+// PostInstanceEmbedder must save only the two embedder fields it carries,
+// leaving every other field (name, base URL, ...) untouched — the bug this
+// guards against is a shared handler blanking fields a partial form never
+// submitted.
+func TestPostInstanceEmbedderLeavesOtherFieldsUntouched(t *testing.T) {
+	h := newHarness(t)
+	admin := h.createAdmin(t, "admin@example.com")
+	inst := h.createInstance(t, "My Zotero", "embedder-partial-update")
+	originalName := inst.Name
+	originalBaseURL := inst.BaseURL
+
+	form := url.Values{"embedder_url": {"http://host.docker.internal:11434"}, "embedder_model": {"nomic-embed-text"}}
+	req := authedRequest(http.MethodPost, "/instances/"+inst.ID+"/embedder", admin)
+	req.Body = io.NopCloser(strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetPathValue("id", inst.ID)
+
+	rec := httptest.NewRecorder()
+	h.server.PostInstanceEmbedder(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want a redirect", rec.Code)
+	}
+
+	updated, err := h.instances.Get(context.Background(), inst.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if updated.EmbedderURL != "http://host.docker.internal:11434" {
+		t.Errorf("EmbedderURL = %q", updated.EmbedderURL)
+	}
+	if updated.EmbedderModel != "nomic-embed-text" {
+		t.Errorf("EmbedderModel = %q", updated.EmbedderModel)
+	}
+	if updated.Name != originalName {
+		t.Errorf("Name changed to %q, want untouched %q", updated.Name, originalName)
+	}
+	if updated.BaseURL != originalBaseURL {
+		t.Errorf("BaseURL changed to %q, want untouched %q", updated.BaseURL, originalBaseURL)
 	}
 }
 

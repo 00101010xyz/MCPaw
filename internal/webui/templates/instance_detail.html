@@ -51,11 +51,60 @@
   <div class="panel__head"><h2>Semantic search</h2></div>
   <p class="lede">
     Finds passages in this library's PDF and snapshot text by meaning, so an MCP
-    client can pull a few relevant excerpts instead of a whole document. Configure
-    <code>embedderUrl</code> below to point at an embeddings sidecar (Ollama or
-    text-embeddings-inference), then build the index here. It only appears to
-    clients once it holds at least one chunk.
+    client can pull a few relevant excerpts instead of a whole document. Point the
+    embedder URL below at an embeddings sidecar (Ollama or text-embeddings-inference),
+    then build the index here. This is instance-level configuration, separate from the
+    connector — it only appears to clients once the index holds at least one chunk.
   </p>
+
+  <form method="post" action="/instances/{{$inst.ID}}/embedder">
+    <input type="hidden" name="csrf_token" value="{{$csrf}}">
+
+    <label for="embedder_url">Embedder URL</label>
+    <input id="embedder_url" name="embedder_url" type="url" value="{{$inst.EmbedderURL}}"
+           placeholder="http://host.docker.internal:11434">
+    <p class="hint">Leave empty to leave semantic search off; every other tool works without it.</p>
+
+    <label for="embedder_model">Embedder model</label>
+    <input id="embedder_model" name="embedder_model" type="text" value="{{$inst.EmbedderModel}}"
+           placeholder="nomic-embed-text">
+
+    <button type="submit" class="btn btn--sm">Save embedder settings</button>
+  </form>
+
+  <div class="table-wrap">
+    <table class="table-stack">
+      <thead><tr><th>Name</th><th>State</th><th>Set value</th></tr></thead>
+      <tbody>
+        <tr>
+          <td data-label="Name">
+            <code>embedderApiKey</code>
+            <p class="hint">Bearer token for the embeddings sidecar, if it requires one. Most local setups (a bare Ollama instance) do not.</p>
+          </td>
+          <td data-label="State">
+            {{if .EmbedderAPIKeySet}}<span class="tag tag--ok">set</span>{{else}}<span class="tag tag--off">empty</span>{{end}}
+          </td>
+          <td data-label="Set value">
+            <form method="post" action="/instances/{{$inst.ID}}/secrets" class="secret-set">
+              <input type="hidden" name="csrf_token" value="{{$csrf}}">
+              <input type="hidden" name="name" value="embedderApiKey">
+              <label class="visually-hidden" for="secret-embedderApiKey">New embedder API key</label>
+              <input id="secret-embedderApiKey" type="password" name="value" autocomplete="new-password" placeholder="New value">
+              <button type="submit" class="btn btn--sm">Save</button>
+            </form>
+            {{if .EmbedderAPIKeySet}}
+            <form method="post" action="/instances/{{$inst.ID}}/secrets/delete" class="inline">
+              <input type="hidden" name="csrf_token" value="{{$csrf}}">
+              <input type="hidden" name="name" value="embedderApiKey">
+              <button type="submit" class="linkbtn linkbtn--danger">Remove</button>
+            </form>
+            {{end}}
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
   <dl class="facts">
     <dt>Indexed chunks</dt><dd>{{.ChunkCount}}</dd>
     <dt>State</dt>

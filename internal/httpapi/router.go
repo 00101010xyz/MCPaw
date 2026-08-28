@@ -190,6 +190,7 @@ func mountWebUI(mux *http.ServeMux, deps Deps) {
 	mux.Handle("POST /instances/{id}/secrets/delete", admin(ui.PostInstanceSecretDelete))
 	mux.Handle("POST /instances/{id}/tools", admin(ui.PostInstanceTool))
 	mux.Handle("POST /instances/{id}/test", admin(ui.PostInstanceTest))
+	mux.Handle("POST /instances/{id}/embedder", admin(ui.PostInstanceEmbedder))
 	mux.Handle("POST /instances/{id}/reindex", admin(ui.PostInstanceReindex))
 	mux.Handle("POST /instances/{id}/delete", admin(ui.PostInstanceDelete))
 

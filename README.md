@@ -115,10 +115,11 @@ bearer-token-scoping behaviour — rather than mocking the stack away.
 
 ## Semantic search
 
-An instance of the Zotero or Gitea connector can index its content — Zotero's
-PDF and snapshot attachments, or a Gitea repository's markdown and typst
-files — and expose a `semantic_search` tool that returns short, relevant
-excerpts instead of whole documents. It needs a local embeddings sidecar
+An instance of the Zotero, Gitea or Linkding connector can index its content
+— Zotero's PDF and snapshot attachments, a Gitea repository's markdown and
+typst files, or a Linkding bookmark's archived HTML snapshot — and expose a
+`semantic_search` tool that returns short, relevant excerpts instead of
+whole documents. It needs a local embeddings sidecar
 (e.g. [Ollama](https://ollama.com) running an embedding model such as
 `nomic-embed-text`, exposed at `http://host.docker.internal:11434`) — set
 that as the **embedder URL** in the instance's "Semantic search" panel (an

@@ -1,0 +1,208 @@
+apiVersion: mcpaw.dev/v1
+kind: Connector
+metadata:
+  id: linkding
+  name: Linkding
+  version: 1.0.0
+  description: >-
+    Read-only access to a Linkding bookmark manager. Lets an MCP client search
+    and read bookmarks, and read the archived HTML snapshot Linkding took of
+    a page at save time — also the basis for semantic search over that
+    snapshot text (see internal/index/source/linkding).
+  documentation: https://linkding.link/api/
+  tags: [linkding, bookmarks, read-only]
+
+spec:
+  baseUrl:
+    default: http://host.docker.internal:9090
+    description: >-
+      Origin of your Linkding instance. 9090 is the default port of
+      Linkding's own Docker image; a self-hosted instance reachable from
+      this container is the common case, but change this for a remote one.
+    requiresPrivateNetwork: true
+
+  auth:
+    # Every Linkding API endpoint requires a token — there is no
+    # unauthenticated mode the way Zotero's local API has, so this secret is
+    # required rather than optional.
+    type: apiKey
+    in: header
+    name: Authorization
+    value: "Token {{secrets.token}}"
+
+  secrets:
+    - name: token
+      description: >-
+        Linkding API token (Settings → Integrations → API Token).
+      required: true
+
+  defaults:
+    headers:
+      Accept: application/json
+    timeoutMs: 15000
+    maxResponseBytes: 8388608
+    rateLimitPerMin: 120
+    maxConcurrent: 4
+
+  tools:
+    - name: linkding_list_bookmarks
+      title: List or search bookmarks
+      description: >-
+        List bookmarks, most recently added first, optionally filtered by a
+        search query. Returns bibliographic metadata (URL, title,
+        description, tags) for each match, not the archived page content —
+        good for "find the bookmark about X", not for "find text on the
+        saved page". For a natural-language question about what a saved
+        page actually says, prefer linkding_semantic_search if it is
+        available.
+      annotations:
+        readOnlyHint: true
+        openWorldHint: false
+      inputSchema:
+        type: object
+        additionalProperties: false
+        properties:
+          q:
+            type: string
+            description: Search query, matched against title, description, URL and tags.
+            maxLength: 512
+          limit:
+            type: integer
+            minimum: 1
+            maximum: 100
+          offset:
+            type: integer
+            minimum: 0
+          modified_since:
+            type: string
+            description: ISO 8601 timestamp; only bookmarks modified at or after this.
+            maxLength: 40
+          added_since:
+            type: string
+            description: ISO 8601 timestamp; only bookmarks added at or after this.
+            maxLength: 40
+      request:
+        method: GET
+        path: /api/bookmarks/
+        query:
+          q: "{{input.q}}"
+          limit: "{{input.limit|default:100}}"
+          offset: "{{input.offset|default:0}}"
+          modified_since: "{{input.modified_since}}"
+          added_since: "{{input.added_since}}"
+      response:
+        successCodes: [200]
+        format: json
+
+    - name: linkding_list_archived_bookmarks
+      title: List archived bookmarks
+      description: >-
+        List bookmarks the user has archived (removed from the default view
+        without deleting), most recently added first. Same fields and
+        filtering as linkding_list_bookmarks.
+      annotations:
+        readOnlyHint: true
+        openWorldHint: false
+      inputSchema:
+        type: object
+        additionalProperties: false
+        properties:
+          q:
+            type: string
+            maxLength: 512
+          limit:
+            type: integer
+            minimum: 1
+            maximum: 100
+          offset:
+            type: integer
+            minimum: 0
+      request:
+        method: GET
+        path: /api/bookmarks/archived/
+        query:
+          q: "{{input.q}}"
+          limit: "{{input.limit|default:100}}"
+          offset: "{{input.offset|default:0}}"
+      response:
+        successCodes: [200]
+        format: json
+
+    - name: linkding_get_bookmark
+      title: Get one bookmark
+      description: Fetch the complete metadata of a single bookmark by its numeric id.
+      annotations:
+        readOnlyHint: true
+        openWorldHint: false
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required: [id]
+        properties:
+          id:
+            type: integer
+            description: Bookmark id, from linkding_list_bookmarks.
+            minimum: 1
+      request:
+        method: GET
+        path: /api/bookmarks/{{input.id}}/
+      response:
+        successCodes: [200]
+        format: json
+
+    - name: linkding_list_assets
+      title: List a bookmark's saved snapshots and files
+      description: >-
+        List the archived HTML snapshots and uploaded files attached to one
+        bookmark. Use this to find a snapshot's asset id before reading its
+        content with linkding_get_asset_content — look for asset_type
+        "snapshot" and status "complete".
+      annotations:
+        readOnlyHint: true
+        openWorldHint: false
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required: [bookmarkId]
+        properties:
+          bookmarkId:
+            type: integer
+            description: Bookmark id, from linkding_list_bookmarks.
+            minimum: 1
+      request:
+        method: GET
+        path: /api/bookmarks/{{input.bookmarkId}}/assets/
+      response:
+        successCodes: [200]
+        format: json
+
+    - name: linkding_get_asset_content
+      title: Get a snapshot or file's raw content
+      description: >-
+        Fetch one asset's raw content — for an asset_type "snapshot" this is
+        the full archived HTML of the page as Linkding saved it, not a JSON
+        wrapper. Not meant for an "upload" asset that is actually an image
+        or other binary file; expect an unreadable response for those.
+      annotations:
+        readOnlyHint: true
+        openWorldHint: false
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required: [bookmarkId, assetId]
+        properties:
+          bookmarkId:
+            type: integer
+            description: Bookmark id, from linkding_list_bookmarks.
+            minimum: 1
+          assetId:
+            type: integer
+            description: Asset id, from linkding_list_assets.
+            minimum: 1
+      request:
+        method: GET
+        path: /api/bookmarks/{{input.bookmarkId}}/assets/{{input.assetId}}/download/
+      response:
+        successCodes: [200]
+        format: text
+        maxBytes: 8388608

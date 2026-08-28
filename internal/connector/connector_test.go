@@ -240,6 +240,53 @@ func TestGiteaConnectorShape(t *testing.T) {
 	}
 }
 
+func TestLinkdingConnectorShape(t *testing.T) {
+	recs, err := Builtins()
+	if err != nil {
+		t.Fatalf("Builtins: %v", err)
+	}
+	var linkding *Compiled
+	for _, rec := range recs {
+		if rec.ID == "linkding" {
+			m, err := ParseManifest(rec.Manifest)
+			if err != nil {
+				t.Fatalf("ParseManifest: %v", err)
+			}
+			if linkding, err = Compile(m); err != nil {
+				t.Fatalf("Compile: %v", err)
+			}
+		}
+	}
+	if linkding == nil {
+		t.Fatal("linkding connector not found")
+	}
+
+	for _, want := range []string{
+		"linkding_list_bookmarks", "linkding_list_archived_bookmarks",
+		"linkding_get_bookmark", "linkding_list_assets", "linkding_get_asset_content",
+	} {
+		tool, ok := linkding.Tool(want)
+		if !ok {
+			t.Errorf("missing tool %s", want)
+			continue
+		}
+		if tool.Def.Annotations == nil || tool.Def.Annotations.ReadOnlyHint == nil || !*tool.Def.Annotations.ReadOnlyHint {
+			t.Errorf("tool %s is missing readOnlyHint", want)
+		}
+		if tool.Def.Request.Method != "GET" {
+			t.Errorf("tool %s uses %s, want GET", want, tool.Def.Request.Method)
+		}
+	}
+
+	// Unlike Zotero's and Gitea's optional credential, every Linkding API
+	// call needs a token — there is no anonymous mode to fall back to.
+	for _, secret := range linkding.Secrets() {
+		if !secret.Required {
+			t.Errorf("secret %s must be required: Linkding has no unauthenticated API mode", secret.Name)
+		}
+	}
+}
+
 func TestParseManifestRejectsUnknownFields(t *testing.T) {
 	src := strings.Replace(minimalManifest, "  version: 1.0.0", "  version: 1.0.0\n  typoedField: oops", 1)
 	if _, err := ParseManifest([]byte(src)); err == nil {

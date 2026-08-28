@@ -289,6 +289,94 @@ func TestIndexerReindexEndToEndGitea(t *testing.T) {
 	}
 }
 
+// fakeLinkdingServer serves the three endpoints the Linkding indexer
+// crawls: one bookmark with one complete HTML snapshot.
+func fakeLinkdingServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/bookmarks/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"count":1,"next":null,"previous":null,"results":[{"id":1,"url":"https://example.com/article"}]}`)
+	})
+	mux.HandleFunc("/api/bookmarks/1/assets/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"count":1,"next":null,"previous":null,"results":[{"id":100,"asset_type":"snapshot","status":"complete","content_type":"text/html"}]}`)
+	})
+	mux.HandleFunc("/api/bookmarks/1/assets/100/download/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<html><body><article><p>the quick brown fox jumps over the lazy dog. `+
+			strings.Repeat("more filler text to make a real chunk. ", 20)+`</p></article></body></html>`)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// This is the same Source-seam proof as TestIndexerReindexEndToEndGitea, for
+// a third, independently registered crawler with a shape all its own —
+// paginated bookmarks, a nested assets list, and raw (non-JSON) HTML that
+// index.StripHTML has to turn into indexable text — through the identical
+// generic Indexer code path, with no branch anywhere in internal/service
+// naming "linkding".
+func TestIndexerReindexEndToEndLinkding(t *testing.T) {
+	env := newTestEnv(t)
+	linkding := fakeLinkdingServer(t)
+	embedder := fakeEmbedderServer(t)
+	ctx := context.Background()
+
+	in := CreateInput{
+		Name: "My Bookmarks", Slug: "my-bookmarks", ConnectorID: "linkding",
+		BaseURL:             linkding.URL,
+		Enabled:             true,
+		AllowPrivateNetwork: true,
+		EmbedderURL:         embedder.URL,
+	}
+	inst, err := env.Instances.Create(ctx, systemActor(), in)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := env.Instances.SetSecret(ctx, systemActor(), inst.ID, "token", "test-token"); err != nil {
+		t.Fatalf("SetSecret: %v", err)
+	}
+	for _, tool := range []string{"linkding_list_bookmarks", "linkding_list_assets", "linkding_get_asset_content"} {
+		if err := env.Instances.SetToolEnabled(ctx, systemActor(), inst.ID, tool, true); err != nil {
+			t.Fatalf("SetToolEnabled(%s): %v", tool, err)
+		}
+	}
+
+	if !env.Indexer.Supported("linkding") {
+		t.Fatal("Supported(\"linkding\") = false, want true once source/linkding is registered")
+	}
+
+	if err := env.Indexer.Reindex(ctx, systemActor(), inst.ID, ReindexUpdate); err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+	st := waitForIndexDone(t, env, inst.ID, 5*time.Second)
+	if st.LastError != "" {
+		t.Fatalf("reindex failed: %s", st.LastError)
+	}
+	if st.ChunksIndexed == 0 {
+		t.Fatal("ChunksIndexed = 0, want at least one chunk from the fake snapshot")
+	}
+	if !env.Indexer.Ready(ctx, inst.ID) {
+		t.Error("Ready must be true once chunks exist")
+	}
+
+	hits, err := env.Indexer.Search(ctx, inst.ID, "quick brown fox", 5)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(hits) == 0 {
+		t.Fatal("Search returned no hits for text known to be indexed")
+	}
+	if hits[0].ItemKey != "1" || hits[0].AttachmentKey != "100" {
+		t.Errorf("hit = %+v, want ItemKey=1 AttachmentKey=100", hits[0])
+	}
+	if strings.Contains(hits[0].Text, "<p>") || strings.Contains(hits[0].Text, "<article>") {
+		t.Errorf("hit text = %q, want HTML tags stripped by index.StripHTML before chunking", hits[0].Text)
+	}
+}
+
 // createIndexableGiteaInstance creates an instance pointed at a mutable fake
 // Gitea server, with the fake embedder configured and both crawl tools
 // enabled — the common setup for the incremental-update tests below, which

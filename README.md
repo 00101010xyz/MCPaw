@@ -1,14 +1,11 @@
 # MCPaw
 
-MCPaw turns ordinary HTTP APIs into [Model Context Protocol](https://modelcontextprotocol.io)
-servers. You describe an API once — declaratively, as a *connector* — configure a
-deployment of it through a web UI, and MCPaw serves it at a stable MCP endpoint that any
-MCP client can connect to. The first shipped connector exposes the **Zotero Desktop**
-local API.
+MCPaw runs a [Model Context Protocol](https://modelcontextprotocol.io) server for the
+**Zotero Desktop** local API, packaged as one Docker container with a small web UI for
+configuring instances, tokens and tool access.
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design rationale
-(components, data flow, security model, scalability decisions) and
-[`SECURITY.md`](SECURITY.md) for how to report a vulnerability.
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for how it's put together and
+[`SECURITY.md`](SECURITY.md) to report a vulnerability.
 
 ## Quickstart
 
@@ -36,9 +33,9 @@ Once signed in:
    `host.docker.internal` for you on Linux; Docker Desktop on macOS/Windows resolves it
    automatically).
 2. **Enable private-network egress** on the instance. MCPaw refuses to reach loopback and
-   private-network addresses by default — this is a deliberate, audited opt-in, not a bug.
-   Cloud instance-metadata addresses (`169.254.169.254` and friends) stay blocked
-   regardless.
+   private-network addresses by default — that's intentional, not a bug, since Zotero's
+   local API lives on your machine's loopback interface. Cloud instance-metadata addresses
+   (`169.254.169.254` and friends) stay blocked regardless.
 3. Leave the `userId` variable at its default (`0`) — that's what the local API always
    uses. No secret is required for the local API.
 4. Leave **Host header override** at its pre-filled `127.0.0.1:23119` — **including the
@@ -130,13 +127,3 @@ instance-level setting, separate from the connector's own configuration),
 then use **Build index**. The tool is only advertised to clients once the
 index holds at least one chunk; leaving the embedder URL empty leaves the
 feature off entirely, with no other effect on the instance.
-
-## Adding a connector
-
-A connector is a declarative YAML manifest — base URL, authentication scheme, variables,
-secrets, and a list of tools, each a JSON Schema plus a request template. It is data, not
-code: MCPaw never executes anything from a manifest. Import one from Connectors → Import a
-manifest, where it is fully validated (every template reference, JSON Schema, and request
-definition) before it's stored. See the built-in
-[`internal/connector/builtin/zotero-local.yaml`](internal/connector/builtin/zotero-local.yaml)
-as a worked example, and `docs/ARCHITECTURE.md` §5 for the manifest reference.

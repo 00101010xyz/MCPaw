@@ -155,6 +155,14 @@ type UpdateInput struct {
 func (s *Instances) Create(ctx context.Context, actor Actor, in CreateInput) (*domain.Instance, error) {
 	entry, err := s.connectors.Get(ctx, in.ConnectorID)
 	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			// Not "gone" — the operator supplied an unrecognised connector ID
+			// on a create form, which is a validation problem, not a lookup of
+			// something that used to exist. ErrNotFound here would render as
+			// "that item no longer exists", which makes no sense on a form
+			// that was never backed by anything.
+			return nil, fmt.Errorf("%w: unknown connector %q", domain.ErrInvalidInput, in.ConnectorID)
+		}
 		return nil, err
 	}
 

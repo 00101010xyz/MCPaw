@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,6 +32,26 @@ func fakeZoteroServer(t *testing.T) *httptest.Server {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"content":"the quick brown fox jumps over the lazy dog. `+
 			strings.Repeat("more filler text to make a real chunk. ", 20)+`"}`)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// fakeGiteaServer serves the two endpoints the Gitea indexer crawls: a tree
+// listing with one markdown file, and that file's blob content.
+func fakeGiteaServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/repos/octocat/thesis/git/trees/main", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"tree":[{"path":"chapters/intro.md","type":"blob","sha":"abc12345"}],"truncated":false}`)
+	})
+	mux.HandleFunc("/api/v1/repos/octocat/thesis/git/blobs/abc12345", func(w http.ResponseWriter, r *http.Request) {
+		content := "# Introduction\n\nthe quick brown fox jumps over the lazy dog. " +
+			strings.Repeat("more filler text to make a real chunk. ", 20)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"content":%q,"encoding":"base64"}`, base64.StdEncoding.EncodeToString([]byte(content)))
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -139,6 +160,67 @@ func TestIndexerReindexEndToEnd(t *testing.T) {
 	}
 	if hits[0].ItemKey != "ITEM0001" || hits[0].AttachmentKey != "ATT00001" {
 		t.Errorf("hit = %+v, want ItemKey=ITEM0001 AttachmentKey=ATT00001", hits[0])
+	}
+}
+
+// This is the proof the Source seam actually holds: a second, independently
+// registered crawler works end to end (crawl, heading-chunk, embed, store,
+// search) through the exact same generic Indexer code path Zotero uses,
+// with no branch anywhere in internal/service naming "gitea".
+func TestIndexerReindexEndToEndGitea(t *testing.T) {
+	env := newTestEnv(t)
+	gitea := fakeGiteaServer(t)
+	embedder := fakeEmbedderServer(t)
+	ctx := context.Background()
+
+	in := CreateInput{
+		Name: "My Thesis", Slug: "my-thesis", ConnectorID: "gitea",
+		BaseURL:             gitea.URL,
+		Variables:           map[string]string{"owner": "octocat", "repo": "thesis", "ref": "main"},
+		Enabled:             true,
+		AllowPrivateNetwork: true,
+		EmbedderURL:         embedder.URL,
+	}
+	inst, err := env.Instances.Create(ctx, systemActor(), in)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	for _, tool := range []string{"gitea_list_tree", "gitea_get_file"} {
+		if err := env.Instances.SetToolEnabled(ctx, systemActor(), inst.ID, tool, true); err != nil {
+			t.Fatalf("SetToolEnabled(%s): %v", tool, err)
+		}
+	}
+
+	if !env.Indexer.Supported("gitea") {
+		t.Fatal("Supported(\"gitea\") = false, want true once source/gitea is registered")
+	}
+
+	if err := env.Indexer.Reindex(ctx, systemActor(), inst.ID); err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+	st := waitForIndexDone(t, env, inst.ID, 5*time.Second)
+	if st.LastError != "" {
+		t.Fatalf("reindex failed: %s", st.LastError)
+	}
+	if st.ChunksIndexed == 0 {
+		t.Fatal("ChunksIndexed = 0, want at least one chunk from chapters/intro.md")
+	}
+	if !env.Indexer.Ready(ctx, inst.ID) {
+		t.Error("Ready must be true once chunks exist")
+	}
+
+	hits, err := env.Indexer.Search(ctx, inst.ID, "quick brown fox", 5)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(hits) == 0 {
+		t.Fatal("Search returned no hits for text known to be indexed")
+	}
+	if hits[0].ItemKey != "chapters/intro.md" || hits[0].AttachmentKey != "chapters/intro.md" {
+		t.Errorf("hit = %+v, want ItemKey=AttachmentKey=chapters/intro.md", hits[0])
+	}
+	if !strings.HasPrefix(hits[0].Text, "Introduction\n\n") {
+		t.Errorf("hit text = %q, want it to carry the heading breadcrumb from ChunkHeading", hits[0].Text)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"github.com/00101010xyz/mcpaw/internal/connector"
 	"github.com/00101010xyz/mcpaw/internal/engine"
 	"github.com/00101010xyz/mcpaw/internal/index"
+	_ "github.com/00101010xyz/mcpaw/internal/index/source/gitea"  // registers the Gitea crawler
 	_ "github.com/00101010xyz/mcpaw/internal/index/source/zotero" // registers the Zotero crawler
 	"github.com/00101010xyz/mcpaw/internal/secrets"
 	"github.com/00101010xyz/mcpaw/internal/store/sqlitestore"

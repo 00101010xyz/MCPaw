@@ -18,6 +18,7 @@ import (
 	"github.com/00101010xyz/mcpaw/internal/httpapi"
 	"github.com/00101010xyz/mcpaw/internal/httpx"
 	"github.com/00101010xyz/mcpaw/internal/index"
+	_ "github.com/00101010xyz/mcpaw/internal/index/source/gitea"  // registers the Gitea crawler
 	_ "github.com/00101010xyz/mcpaw/internal/index/source/zotero" // registers the Zotero crawler
 	"github.com/00101010xyz/mcpaw/internal/mcp"
 	"github.com/00101010xyz/mcpaw/internal/platform/config"

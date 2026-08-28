@@ -113,13 +113,12 @@ go test ./...
 SQLite database and exercise it through actual HTTP requests — including the CSRF and
 bearer-token-scoping behaviour — rather than mocking the stack away.
 
-## Semantic search over PDFs and snapshots
+## Semantic search
 
-The Zotero connector can index the text it extracts from PDF and snapshot
-attachments and expose a `zotero_semantic_search` tool that returns short,
-relevant excerpts instead of whole documents — cheaper for an MCP client to
-consume than `zotero_get_item_fulltext`, and more targeted than
-`zotero_search_items`'s metadata search. It needs a local embeddings sidecar
+An instance of the Zotero or Gitea connector can index its content — Zotero's
+PDF and snapshot attachments, or a Gitea repository's markdown and typst
+files — and expose a `semantic_search` tool that returns short, relevant
+excerpts instead of whole documents. It needs a local embeddings sidecar
 (e.g. [Ollama](https://ollama.com) running an embedding model such as
 `nomic-embed-text`, exposed at `http://host.docker.internal:11434`) — set
 that as the **embedder URL** in the instance's "Semantic search" panel (an

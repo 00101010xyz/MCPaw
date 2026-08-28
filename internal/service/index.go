@@ -211,7 +211,7 @@ func (s *Indexer) runReindex(instanceID string) {
 // where the text came from — unlike the crawl itself, which is entirely
 // source-specific (see internal/index/source).
 func (s *Indexer) indexDocument(ctx context.Context, resolved *Resolved, target *engine.Target, instanceID string, doc source.Document, text string) {
-	spans := index.Chunk(text)
+	spans := chunkFor(doc, text)
 	if len(spans) > reindexMaxChunksPerFile {
 		spans = spans[:reindexMaxChunksPerFile]
 	}
@@ -245,6 +245,17 @@ func (s *Indexer) indexDocument(ctx context.Context, resolved *Resolved, target 
 		return
 	}
 	s.addChunks(instanceID, len(chunks))
+}
+
+// chunkFor picks the splitter a document's crawler asked for. A source sets
+// HeadingDialect on a per-document basis (a Gitea repository can mix
+// markdown and typst files, say), never globally per connector, so the
+// dispatch has to happen here rather than once per crawl.
+func chunkFor(doc source.Document, text string) []index.Span {
+	if doc.HeadingDialect != "" {
+		return index.ChunkHeading(text, doc.HeadingDialect)
+	}
+	return index.Chunk(text)
 }
 
 func (s *Indexer) addItem(instanceID string) {

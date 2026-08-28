@@ -1,0 +1,141 @@
+apiVersion: mcpaw.dev/v1
+kind: Connector
+metadata:
+  id: gitea
+  name: Gitea
+  version: 1.0.0
+  description: >-
+    Read-only access to one repository on a Gitea instance — self-hosted or
+    gitea.com. Lets an MCP client browse a repository's file tree and read
+    file contents; also the basis for semantic search over the repository's
+    text files (see internal/index/source/gitea).
+  documentation: https://docs.gitea.com/api/next
+  tags: [gitea, git, repository, code, read-only]
+
+spec:
+  baseUrl:
+    default: https://gitea.com
+    description: >-
+      Origin of your Gitea instance. Change this — the default is just
+      gitea.com's hosted service, picked because it's a real, always-valid
+      URL, not because it's likely what you want. For a self-hosted instance
+      reachable from this container, that's often
+      http://host.docker.internal:3000.
+
+  auth:
+    # A public repository needs no credential; a private one, or write
+    # access, needs a personal access token. Declaring the scheme always and
+    # leaving the secret unset simply omits the header, the same pattern the
+    # Zotero connector uses for its own optional API key.
+    type: apiKey
+    in: header
+    name: Authorization
+    value: "token {{secrets.token}}"
+
+  variables:
+    - name: owner
+      description: Repository owner — a user or organisation name.
+      required: true
+      pattern: '^[\w.-]{1,255}$'
+      example: octocat
+    - name: repo
+      description: Repository name.
+      required: true
+      pattern: '^[\w.-]{1,255}$'
+      example: my-thesis
+    - name: ref
+      description: >-
+        Branch, tag or commit to read and index, e.g. main or master. Gitea
+        has no single universal default branch name, so this must be set
+        explicitly rather than guessed. A branch name containing a slash
+        (e.g. release/1.0) is not supported here — it is used as a single
+        URL path segment upstream.
+      required: true
+      example: main
+
+  secrets:
+    - name: token
+      description: >-
+        Gitea personal access token (Settings → Applications → Generate New
+        Token), needed for a private repository or to raise the anonymous
+        rate limit. Leave empty for a public repository accessed
+        occasionally.
+      required: false
+
+  defaults:
+    headers:
+      Accept: application/json
+    timeoutMs: 15000
+    maxResponseBytes: 8388608
+    rateLimitPerMin: 120
+    maxConcurrent: 4
+
+  tools:
+    - name: gitea_get_repo
+      title: Get repository info
+      description: >-
+        Fetch metadata for the configured repository — description, default
+        branch, size, star/fork counts. Useful to confirm the connection and
+        to discover the repository's actual default branch name.
+      annotations:
+        readOnlyHint: true
+        openWorldHint: false
+      inputSchema:
+        type: object
+        additionalProperties: false
+      request:
+        method: GET
+        path: /api/v1/repos/{{vars.owner}}/{{vars.repo}}
+      response:
+        successCodes: [200]
+        format: json
+
+    - name: gitea_list_tree
+      title: List repository files
+      description: >-
+        List every file and directory in the repository at the configured
+        ref, recursively, as a flat array of {path, type, sha, size}. Use
+        this to find a file's blob SHA before reading it with
+        gitea_get_file. Large repositories may be truncated by the upstream
+        API; the response's "truncated" field says so.
+      annotations:
+        readOnlyHint: true
+        openWorldHint: false
+      inputSchema:
+        type: object
+        additionalProperties: false
+      request:
+        method: GET
+        path: /api/v1/repos/{{vars.owner}}/{{vars.repo}}/git/trees/{{vars.ref}}
+        query:
+          recursive: "true"
+      response:
+        successCodes: [200]
+        format: json
+
+    - name: gitea_get_file
+      title: Get file contents
+      description: >-
+        Fetch one file's content by blob SHA — get the SHA for a path from
+        gitea_list_tree's file listing first. The response's "content"
+        field is base64-encoded (Gitea's own git-blob format); decode it to
+        get the file's text. Not meant for binary files.
+      annotations:
+        readOnlyHint: true
+        openWorldHint: false
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required: [sha]
+        properties:
+          sha:
+            type: string
+            description: Blob SHA, from gitea_list_tree's "sha" field for the desired path.
+            pattern: '^[0-9a-fA-F]{4,64}$'
+      request:
+        method: GET
+        path: /api/v1/repos/{{vars.owner}}/{{vars.repo}}/git/blobs/{{input.sha}}
+      response:
+        successCodes: [200]
+        format: json
+        maxBytes: 4194304

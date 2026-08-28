@@ -28,6 +28,11 @@ import (
 type Document struct {
 	ItemKey       string
 	AttachmentKey string
+	// HeadingDialect, when non-empty, selects heading-based chunking (see
+	// index.ChunkHeading) instead of the default size-based split — set by
+	// a crawler that recognises its own file-type conventions (e.g. .typ or
+	// .md), never guessed from content. Empty means the default splitter.
+	HeadingDialect string
 }
 
 // EmitFunc is called by a Crawler once per candidate document it finds,

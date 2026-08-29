@@ -54,6 +54,13 @@
   {{end}}
   {{end}}
 
+  {{range .Compiled.Secrets}}
+  <label for="secret_{{.Name}}">{{.Name}}{{if .Required}} <span class="req">*</span>{{end}}</label>
+  <input id="secret_{{.Name}}" name="secret_{{.Name}}" type="password" autocomplete="new-password"
+         {{if .Required}}required{{end}}>
+  <p class="hint">{{.Description}} Encrypted before storage; not shown again once set.</p>
+  {{end}}
+
   {{if .Compiled.Manifest.Spec.BaseURL.RequiresPrivateNetwork}}
   <div class="callout">
     <h3>This connector talks to a private address</h3>

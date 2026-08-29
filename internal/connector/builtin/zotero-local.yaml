@@ -24,6 +24,7 @@ spec:
       Origin of the Zotero HTTP API. Use http://host.docker.internal:23119 for
       the local desktop API, or https://api.zotero.org for the hosted service.
     requiresPrivateNetwork: true
+    suggestHostHeaderOverride: true
 
   auth:
     # The local API needs no credential. Declaring the scheme anyway means the

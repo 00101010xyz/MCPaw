@@ -46,6 +46,50 @@
   </div>
 </section>
 
+{{if $d.Detail.Secrets}}
+<section class="panel panel--tight">
+  <div class="panel__head"><h2>Credentials</h2></div>
+  <p class="lede">
+    Values are encrypted before storage and never displayed again — not here, not in
+    the logs, not anywhere.
+  </p>
+  <div class="table-wrap">
+    <table class="table-stack">
+      <thead><tr><th>Name</th><th>State</th><th>Set value</th></tr></thead>
+      <tbody>
+      {{range $d.Detail.Secrets}}
+        <tr>
+          <td data-label="Name">
+            <code>{{.Def.Name}}</code>{{if .Def.Required}} <span class="req">*</span>{{end}}
+            {{if .Def.Description}}<p class="hint">{{.Def.Description}}</p>{{end}}
+          </td>
+          <td data-label="State">
+            {{if .Set}}<span class="tag tag--ok">set</span>{{else}}<span class="tag tag--off">empty</span>{{end}}
+          </td>
+          <td data-label="Set value">
+            <form method="post" action="/instances/{{$inst.ID}}/secrets" class="secret-set">
+              <input type="hidden" name="csrf_token" value="{{$csrf}}">
+              <input type="hidden" name="name" value="{{.Def.Name}}">
+              <label class="visually-hidden" for="secret-{{.Def.Name}}">New value for {{.Def.Name}}</label>
+              <input id="secret-{{.Def.Name}}" type="password" name="value" autocomplete="new-password" placeholder="New value">
+              <button type="submit" class="btn btn--sm">Save</button>
+            </form>
+            {{if .Set}}
+            <form method="post" action="/instances/{{$inst.ID}}/secrets/delete" class="inline">
+              <input type="hidden" name="csrf_token" value="{{$csrf}}">
+              <input type="hidden" name="name" value="{{.Def.Name}}">
+              <button type="submit" class="linkbtn linkbtn--danger">Remove</button>
+            </form>
+            {{end}}
+          </td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  </div>
+</section>
+{{end}}
+
 {{with $d.SearchIndex}}
 <section class="panel panel--tight">
   <div class="panel__head"><h2>Semantic search</h2></div>
@@ -180,50 +224,6 @@
     <button type="submit" class="btn btn--primary btn--submit">Save configuration</button>
   </form>
 </section>
-
-{{if $d.Detail.Secrets}}
-<section class="panel panel--tight">
-  <div class="panel__head"><h2>Credentials</h2></div>
-  <p class="lede">
-    Values are encrypted before storage and never displayed again — not here, not in
-    the logs, not anywhere.
-  </p>
-  <div class="table-wrap">
-    <table class="table-stack">
-      <thead><tr><th>Name</th><th>State</th><th>Set value</th></tr></thead>
-      <tbody>
-      {{range $d.Detail.Secrets}}
-        <tr>
-          <td data-label="Name">
-            <code>{{.Def.Name}}</code>{{if .Def.Required}} <span class="req">*</span>{{end}}
-            {{if .Def.Description}}<p class="hint">{{.Def.Description}}</p>{{end}}
-          </td>
-          <td data-label="State">
-            {{if .Set}}<span class="tag tag--ok">set</span>{{else}}<span class="tag tag--off">empty</span>{{end}}
-          </td>
-          <td data-label="Set value">
-            <form method="post" action="/instances/{{$inst.ID}}/secrets" class="secret-set">
-              <input type="hidden" name="csrf_token" value="{{$csrf}}">
-              <input type="hidden" name="name" value="{{.Def.Name}}">
-              <label class="visually-hidden" for="secret-{{.Def.Name}}">New value for {{.Def.Name}}</label>
-              <input id="secret-{{.Def.Name}}" type="password" name="value" autocomplete="new-password" placeholder="New value">
-              <button type="submit" class="btn btn--sm">Save</button>
-            </form>
-            {{if .Set}}
-            <form method="post" action="/instances/{{$inst.ID}}/secrets/delete" class="inline">
-              <input type="hidden" name="csrf_token" value="{{$csrf}}">
-              <input type="hidden" name="name" value="{{.Def.Name}}">
-              <button type="submit" class="linkbtn linkbtn--danger">Remove</button>
-            </form>
-            {{end}}
-          </td>
-        </tr>
-      {{end}}
-      </tbody>
-    </table>
-  </div>
-</section>
-{{end}}
 
 <section class="panel panel--tight">
   <div class="panel__head"><h2>Tools</h2></div>

@@ -336,6 +336,45 @@ func TestPostSettingsSearchSavesGlobalSettings(t *testing.T) {
 	}
 }
 
+// PostInstances must save a connector-declared secret submitted on the
+// creation form in the same request that creates the instance, rather than
+// requiring a separate trip to the detail page afterward.
+func TestPostInstancesSavesSecretsSubmittedOnCreate(t *testing.T) {
+	h := newHarness(t)
+	admin := h.createAdmin(t, "admin@example.com")
+
+	form := url.Values{
+		"connector_id": {"linkding"}, "action": {"create"},
+		"name": {"My Bookmarks"}, "slug": {"my-bookmarks"},
+		"base_url":     {"http://host.docker.internal:9090"},
+		"secret_token": {"test-token-value"},
+	}
+	req := authedRequest(http.MethodPost, "/instances", admin)
+	req.Body = io.NopCloser(strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	rec := httptest.NewRecorder()
+	h.server.PostInstances(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	instanceID := strings.TrimPrefix(rec.Header().Get("Location"), "/instances/")
+	detail, err := h.instances.Detail(context.Background(), instanceID)
+	if err != nil {
+		t.Fatalf("Detail: %v", err)
+	}
+	var tokenSet bool
+	for _, sec := range detail.Secrets {
+		if sec.Def.Name == "token" {
+			tokenSet = sec.Set
+		}
+	}
+	if !tokenSet {
+		t.Error("secret_token submitted on the creation form was not saved")
+	}
+}
+
 func instanceDetailRequest(user *domain.User, instanceID string) *http.Request {
 	r := authedRequest(http.MethodGet, "/instances/"+instanceID, user)
 	r.SetPathValue("id", instanceID)

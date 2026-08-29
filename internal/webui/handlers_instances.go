@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -79,19 +80,18 @@ func defaultForm(selected *connector.Entry) *instanceForm {
 	for _, v := range selected.Compiled.Variables() {
 		form.Variables[v.Name] = v.Default
 	}
-	form.HostHeaderOverride = suggestHostHeaderOverride(selected.Compiled.Manifest.Spec.BaseURL.Default)
+	if selected.Compiled.Manifest.Spec.BaseURL.SuggestHostHeaderOverride {
+		form.HostHeaderOverride = suggestHostHeaderOverride(selected.Compiled.Manifest.Spec.BaseURL.Default)
+	}
 	return form
 }
 
-// suggestHostHeaderOverride pre-fills the Host header override for the one
-// case it is reliably correct to guess: a connector whose default base URL
-// points at host.docker.internal, the address a container uses to reach a
-// service bound to the host machine's own loopback interface. Such a service
-// (the Zotero desktop app's local API is the shipped example) very often
-// validates the Host header as a DNS-rebinding defense and rejects anything
-// but a loopback name — exactly what host.docker.internal is not. Presenting
-// 127.0.0.1 there, while still connecting via host.docker.internal, is
-// correct far more often than not; the field stays editable either way.
+// suggestHostHeaderOverride derives a concrete "127.0.0.1[:port]" guess from a
+// connector's default base URL, for the connectors that opt in via
+// spec.baseUrl.suggestHostHeaderOverride (currently just Zotero, whose local
+// API validates the Host header as a DNS-rebinding defense). Most
+// host.docker.internal-facing connectors do not do this, so this is never
+// called without that flag rather than guessed from the hostname alone.
 func suggestHostHeaderOverride(defaultBaseURL string) string {
 	u, err := url.Parse(defaultBaseURL)
 	if err != nil || u.Hostname() != "host.docker.internal" {
@@ -148,7 +148,34 @@ func (s *Server) PostInstances(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.flashSuccess(r, "Instance created. Issue a token, then point your MCP client at /mcp/%s.", instance.Slug)
+	actor := s.actor(r)
+	var secretFailures []string
+	for name, value := range collectSecrets(r, entry) {
+		if err := s.instances.SetSecret(r.Context(), actor, instance.ID, name, value); err != nil {
+			secretFailures = append(secretFailures, name)
+		}
+	}
+
+	flash := &Flash{Level: FlashSuccess,
+		Message: fmt.Sprintf("Instance created. Issue a token, then point your MCP client at /mcp/%s.", instance.Slug)}
+	if len(secretFailures) > 0 {
+		flash.Level = FlashError
+		flash.Message += fmt.Sprintf(" Could not save: %s — set them below.", strings.Join(secretFailures, ", "))
+	}
+
+	// A live check right away turns "did I configure this correctly?" into an
+	// immediate, specific answer instead of a guess the operator only gets
+	// after handing the endpoint to a client — the same diagnostic
+	// PostInstanceTest offers, just run once automatically on creation.
+	if result, err := s.instances.TestConnection(r.Context(), actor, instance.ID, ""); err == nil {
+		flash.Test = &TestOutcome{
+			OK: result.OK, Tool: result.Tool, StatusCode: result.StatusCode,
+			DurationMS: result.DurationMS, Message: result.Message,
+			Hint: result.Hint, Preview: result.Preview,
+		}
+	}
+
+	s.flash(r, flash)
 	redirect(w, r, "/instances/"+instance.ID)
 }
 
@@ -159,6 +186,18 @@ func collectVariables(r *http.Request, entry *connector.Entry) map[string]string
 		// crafted POST cannot smuggle a value the manifest never declared.
 		if value := strings.TrimSpace(r.PostFormValue("var_" + v.Name)); value != "" {
 			out[v.Name] = value
+		}
+	}
+	return out
+}
+
+func collectSecrets(r *http.Request, entry *connector.Entry) map[string]string {
+	out := map[string]string{}
+	for _, sec := range entry.Compiled.Secrets() {
+		// Only declared secrets are read from the form, the same restriction
+		// collectVariables applies to variables.
+		if value := r.PostFormValue("secret_" + sec.Name); value != "" {
+			out[sec.Name] = value
 		}
 	}
 	return out

@@ -175,6 +175,18 @@ func (s *Server) PostInstances(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// If this connector can be indexed and a shared embedder is already
+	// configured, start building the index right away rather than requiring
+	// a separate "Build index" click — Reindex runs in the background, so
+	// this returns immediately either way.
+	if s.indexer != nil && s.indexer.Supported(connectorID) {
+		if settings, _, err := s.indexer.EmbedderSettings(r.Context()); err == nil && settings.URL != "" {
+			if err := s.indexer.Reindex(r.Context(), actor, instance.ID, service.ReindexUpdate); err != nil {
+				s.logger.Warn("auto-index on instance creation failed", "instance_id", instance.ID, "error", err)
+			}
+		}
+	}
+
 	s.flash(r, flash)
 	redirect(w, r, "/instances/"+instance.ID)
 }

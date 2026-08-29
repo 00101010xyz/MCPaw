@@ -51,6 +51,14 @@ const (
 	maxSearchLimit       = 20
 	searchCandidatePool  = 40
 	maxChunkPreviewRunes = 700
+	// minRelevanceScore is the cosine-similarity floor a chunk must clear to
+	// be considered a vector match at all. 0.3 is a conservative cut against
+	// most embedding models — comfortably below "related" (typically 0.5+)
+	// but high enough to exclude the near-random matches an unrestricted
+	// top-N search would otherwise happily return. Not exposed as a setting:
+	// a wrong per-model tuning is a rare problem, and a defensible default
+	// beats one more thing to configure.
+	minRelevanceScore = 0.3
 )
 
 // IndexStatus reports the state of an instance's semantic-search index for
@@ -154,10 +162,18 @@ func (s *Indexer) EmbedderSettings(ctx context.Context) (domain.EmbedderSettings
 
 // UpdateEmbedderSettings saves the embedder URL, model and rate limit shared
 // by every instance. Leaving url empty leaves semantic search off entirely
-// for every instance, with no other effect.
+// for every instance, with no other effect. The first time a URL is set (the
+// previously-saved value was empty), every existing supported, enabled
+// instance that has no index yet is started automatically — an operator who
+// creates instances before configuring the embedder should not also have to
+// remember to go build each one's index by hand afterward.
 func (s *Indexer) UpdateEmbedderSettings(ctx context.Context, actor Actor, url, model string, rateLimitPerMin int) error {
 	if rateLimitPerMin < 0 {
 		rateLimitPerMin = 0
+	}
+	previous, err := s.platform.GetEmbedderSettings(ctx)
+	if err != nil {
+		return err
 	}
 	settings := domain.EmbedderSettings{
 		URL: strings.TrimSpace(url), Model: strings.TrimSpace(model),
@@ -168,6 +184,10 @@ func (s *Indexer) UpdateEmbedderSettings(ctx context.Context, actor Actor, url, 
 	}
 	s.audit.Success(ctx, actor, domain.ActionPlatformSettingsUpdate, "platform", "embedder",
 		map[string]any{"url_set": settings.URL != "", "rate_limit_per_min": settings.RateLimitPerMin})
+
+	if previous.URL == "" && settings.URL != "" {
+		s.autoIndexExisting(ctx, actor)
+	}
 	return nil
 }
 
@@ -199,6 +219,31 @@ func (s *Indexer) DeleteEmbedderAPIKey(ctx context.Context, actor Actor) error {
 	s.audit.Success(ctx, actor, domain.ActionPlatformSettingsUpdate, "platform", "embedder",
 		map[string]any{"secret": "deleted"})
 	return nil
+}
+
+// autoIndexExisting starts a background reindex for every supported, enabled
+// instance that has no chunks yet. Failures (a required tool not enabled, a
+// connector mid-reconfiguration) are left for the instance's own status to
+// report, the same as any other Reindex call — this is a convenience
+// trigger, not a guarantee every instance ends up indexed.
+func (s *Indexer) autoIndexExisting(ctx context.Context, actor Actor) {
+	summaries, err := s.instances.List(ctx)
+	if err != nil {
+		s.logger.Warn("auto-index: listing instances failed", slog.String("error", err.Error()))
+		return
+	}
+	for _, sum := range summaries {
+		if !sum.Instance.Enabled || !s.Supported(sum.ConnectorID) {
+			continue
+		}
+		if s.Ready(ctx, sum.Instance.ID) {
+			continue
+		}
+		if err := s.Reindex(ctx, actor, sum.Instance.ID, ReindexUpdate); err != nil {
+			s.logger.Warn("auto-index: starting reindex failed",
+				slog.String("instance_id", sum.Instance.ID), slog.String("error", err.Error()))
+		}
+	}
 }
 
 // embedderAPIKey decrypts the stored embedder API key, if any is set.
@@ -640,6 +685,14 @@ func (s *Indexer) Search(ctx context.Context, instanceID, query string, limit in
 		byID[c.ID] = c
 		sc := index.Cosine(queryVec, c.Embedding)
 		scoreByID[c.ID] = sc
+		// Below minRelevanceScore a "match" is closer to noise than signal —
+		// dropping it here means it never enters fusion at all, rather than
+		// ranking a barely-related chunk over having no result. A keyword
+		// (BM25) match is unaffected: an exact term hit is relevant on its
+		// own terms regardless of embedding similarity.
+		if sc < minRelevanceScore {
+			continue
+		}
 		ranked = append(ranked, scored{c.ID, sc})
 	}
 	sort.Slice(ranked, func(i, j int) bool { return ranked[i].score > ranked[j].score })

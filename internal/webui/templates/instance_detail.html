@@ -263,7 +263,6 @@
         </tr>
       {{end}}
       {{with $d.SearchIndex}}
-      {{if .ChunkCount}}
         <tr>
           <td data-label="Tool">
             <code>{{.ToolName}}</code>
@@ -271,9 +270,12 @@
           </td>
           <td data-label="Method"><span class="muted">—</span></td>
           <td data-label="Behaviour"><span class="tag tag--info">read only</span></td>
-          <td data-label="State"><span class="tag tag--ok">built-in</span></td>
+          <td data-label="State">
+            {{if .Status.Running}}<span class="tag tag--warn">indexing…</span>
+            {{else if .ChunkCount}}<span class="tag tag--ok">active</span>
+            {{else}}<span class="tag tag--off">inactive</span>{{end}}
+          </td>
         </tr>
-      {{end}}
       {{end}}
       </tbody>
     </table>

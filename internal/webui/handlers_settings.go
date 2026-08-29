@@ -3,7 +3,14 @@ package webui
 import (
 	"net/http"
 	"strings"
+
+	"github.com/00101010xyz/mcpaw/internal/index"
 )
+
+// defaultEmbedderURL is pre-filled on the settings page only when nothing has
+// been saved yet, so the common case (a local Ollama sidecar) is "confirm
+// and save" rather than "look up and type" — it stays fully editable.
+const defaultEmbedderURL = "http://host.docker.internal:11434"
 
 // GetSettingsSearch renders the platform-wide semantic search configuration:
 // one embedder shared by every instance capable of indexing, rather than a
@@ -19,8 +26,13 @@ func (s *Server) GetSettingsSearch(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
+	configured := settings.URL != ""
+	if !configured {
+		settings.URL = defaultEmbedderURL
+		settings.Model = index.DefaultEmbedder
+	}
 	s.render(w, r, http.StatusOK, "settings_search", s.page(r, "Semantic search", "settings-search", map[string]any{
-		"Settings": settings, "APIKeySet": apiKeySet,
+		"Settings": settings, "APIKeySet": apiKeySet, "Configured": configured,
 	}))
 }
 

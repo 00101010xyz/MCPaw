@@ -18,7 +18,11 @@
     <label for="embedder_url">Embedder URL</label>
     <input id="embedder_url" name="embedder_url" type="url" value="{{$settings.URL}}"
            placeholder="http://host.docker.internal:11434">
-    <p class="hint">Leave empty to leave semantic search off for every instance.</p>
+    <p class="hint">
+      {{if $d.Configured}}Leave empty to leave semantic search off for every instance.
+      {{else}}Pre-filled with the common local-Ollama default — review and Save to activate it,
+      or clear it to leave semantic search off for every instance.{{end}}
+    </p>
 
     <label for="embedder_model">Embedder model</label>
     <input id="embedder_model" name="embedder_model" type="text" value="{{$settings.Model}}"

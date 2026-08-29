@@ -98,9 +98,10 @@ func buildInstructions(r *Resolved) string {
 // semanticSearchInstructions is appended to the handshake instructions only
 // when the tool is actually being advertised, so a model is told about it in
 // the same breath it learns it exists.
-const semanticSearchInstructions = " This instance also has " + semanticSearchToolName +
-	": prefer it over fetching full documents when you are looking for information " +
-	"matching a question or topic, since it returns short, targeted excerpts instead."
+const semanticSearchInstructions = " This instance has " + semanticSearchToolName +
+	": start there for any question or topic, not the other tools — it returns short, " +
+	"targeted excerpts instead of a whole document, so it is almost always the cheapest " +
+	"way to find something. Reach for the other tools once you know exactly what you need."
 
 func collapseWhitespace(s string) string { return strings.Join(strings.Fields(s), " ") }
 
@@ -111,14 +112,18 @@ func (b *MCPBackend) ListTools(ctx context.Context, instanceID string) ([]mcp.To
 		return nil, err
 	}
 	tools := make([]mcp.Tool, 0, len(resolved.EnabledTools)+1)
+	// Listed first, deliberately: tool order is one of the few signals a
+	// model actually has for which tool to reach for first, and this one is
+	// almost always the cheapest way to answer a question — a manifest tool
+	// returning a whole document should be the fallback, not the default.
+	if b.semanticSearchReady(ctx, resolved) {
+		tools = append(tools, semanticSearchTool())
+	}
 	for _, compiled := range resolved.Connector.Tools {
 		if !resolved.EnabledTools[compiled.Name()] {
 			continue
 		}
 		tools = append(tools, toMCPTool(compiled))
-	}
-	if b.semanticSearchReady(ctx, resolved) {
-		tools = append(tools, semanticSearchTool())
 	}
 	return tools, nil
 }
@@ -314,15 +319,19 @@ func (b *MCPBackend) callSemanticSearch(ctx context.Context, resolved *Resolved,
 		return &mcp.CallToolResult{Content: []mcp.Content{mcp.TextContent("No matching passages found.")}}
 	}
 
+	// Results are already ordered best match first (hybrid rank fusion over
+	// keyword and vector search, not just this per-hit number); the
+	// similarity shown is one input into that ranking, not the ranking
+	// itself, so a lower one further down the list is expected, not a bug.
 	var sb strings.Builder
 	for i, h := range hits {
 		if h.ItemKey == h.AttachmentKey {
 			// A flat source (a Gitea file, say) has no separate "item" a
 			// document belongs to, so printing the same key twice would
 			// just be noise.
-			fmt.Fprintf(&sb, "%d. %s (score %.2f):\n%s\n\n", i+1, h.AttachmentKey, h.Score, h.Text)
+			fmt.Fprintf(&sb, "%d. %s (similarity %.2f):\n%s\n\n", i+1, h.AttachmentKey, h.Score, h.Text)
 		} else {
-			fmt.Fprintf(&sb, "%d. item %s, attachment %s (score %.2f):\n%s\n\n",
+			fmt.Fprintf(&sb, "%d. item %s, attachment %s (similarity %.2f):\n%s\n\n",
 				i+1, h.ItemKey, h.AttachmentKey, h.Score, h.Text)
 		}
 	}

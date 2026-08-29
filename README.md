@@ -1,8 +1,8 @@
 # MCPaw
 
-MCPaw runs a [Model Context Protocol](https://modelcontextprotocol.io) server for the
-**Zotero Desktop** local API, packaged as one Docker container with a small web UI for
-configuring instances, tokens and tool access.
+MCPaw runs a [Model Context Protocol](https://modelcontextprotocol.io) server for Zotero
+Desktop, Gitea and Linkding, packaged as one Docker container with a small web UI for
+configuring instances, tokens, tool access and semantic search.
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for how it's put together and
 [`SECURITY.md`](SECURITY.md) to report a vulnerability.
@@ -25,36 +25,23 @@ after which it is closed permanently.
 > volume, so only do it if you have nothing in it worth keeping yet) and then
 > `docker compose up --build` again.
 
-Once signed in:
+Once signed in, **create an instance** (pick a built-in connector — Zotero, Gitea or
+Linkding). The base URL, egress and Host header override are pre-filled with sensible
+defaults for each; expand **Advanced** to review or change them. Creating an instance
+already runs a connection test and, once an embedder is configured (see below), starts
+indexing automatically — so the common path is: pick a connector, fill in what it asks
+for, submit.
 
-1. **Create an instance.** Pick the built-in **Zotero (Local API)** connector. The base
-   URL defaults to `http://host.docker.internal:23119`, which is how a container reaches
-   the Zotero desktop app's local API running on your machine (`compose.yml` already maps
-   `host.docker.internal` for you on Linux; Docker Desktop on macOS/Windows resolves it
-   automatically).
-2. Under **Advanced**, confirm **private-network egress** is checked (it's pre-checked, since
-   Zotero's local API lives on your machine's loopback interface) and **Host header override**
-   is pre-filled with `127.0.0.1:23119` — **including the port**; `127.0.0.1` alone is a
-   different Host header and Zotero will still reject it. Zotero checks the request's `Host`
-   header as a DNS-rebinding defense and only accepts `127.0.0.1`, `localhost`, or `[::1]` on
-   the exact port it's listening on, rejecting `host.docker.internal` with `400 Bad Request` —
-   this field lets MCPaw connect via `host.docker.internal` (the only address that reaches your
-   host from inside the container) while still presenting a `Host` header Zotero accepts. Cloud
-   instance-metadata addresses (`169.254.169.254` and friends) stay blocked regardless of the
-   egress setting.
-3. Leave the `userId` variable at its default (`0`) — that's what the local API always
-   uses. No secret is required for the local API.
-5. Click **Test connection** to confirm MCPaw can actually reach a running Zotero desktop
-   app before handing the endpoint to a client.
-6. **Issue a token** (Tokens → Issue a token), scoped to this one instance rather than to
-   every instance.
-7. Point your MCP client at `http://localhost:8080/mcp/<slug>` with
-   `Authorization: Bearer <token>`.
+For Zotero specifically: leave the `userId` variable at its default (`0`), and leave
+**Host header override** at its pre-filled `127.0.0.1:23119` including the port — Zotero's
+local API checks the request's `Host` header as a DNS-rebinding defense and rejects
+anything else, even `host.docker.internal`, with `400 Bad Request`. If Test connection
+400s, confirm `curl -i http://127.0.0.1:23119/api/users/0/items?limit=1` works directly on
+the machine running Zotero first.
 
-**Seeing `the upstream API returned 400 Bad Request` on Test connection?** This is almost
-always the Host header check above. Confirm with `curl -i http://127.0.0.1:23119/api/users/0/items?limit=1`
-directly on the machine running Zotero — if that succeeds but MCPaw still 400s, check the
-instance's **Host header override** field is set to `127.0.0.1:23119`.
+Once the instance exists: **issue a token** (Tokens → Issue a token, scoped to this
+instance) and point your MCP client at `http://localhost:8080/mcp/<slug>` with
+`Authorization: Bearer <token>`.
 
 ## Running without Docker
 
@@ -113,27 +100,19 @@ bearer-token-scoping behaviour — rather than mocking the stack away.
 
 ## Semantic search
 
-An instance of the Zotero, Gitea or Linkding connector can index its content
-— Zotero's PDF and snapshot attachments, a Gitea repository's markdown and
-typst files, or a Linkding bookmark's archived HTML snapshot — and expose a
-`semantic_search` tool that returns short, relevant excerpts instead of
-whole documents.
+A Zotero, Gitea or Linkding instance can index its content and expose a
+`semantic_search` tool that returns short, relevant excerpts instead of whole
+documents — advertised to clients as the first and preferred tool once it's
+active.
 
-The embedder is configured once under **Search**, not per instance: point it
-at a local embeddings sidecar (e.g. [Ollama](https://ollama.com) running
-`nomic-embed-text`, exposed at `http://host.docker.internal:11434`), and
-every indexable instance shares it. Leaving the URL empty leaves semantic
-search off entirely; a per-instance rate limit is also set there, since
-every instance shares the same embedder budget. Build each instance's own
-index from that instance's page — the tool is only advertised to clients
-once its index holds at least one chunk.
-
-**Update index** re-fetches everything but only re-embeds a document whose
-content actually changed, and removes any document no longer found
-upstream — the routine action for keeping an index current. **Rebuild from
-scratch** re-embeds every document regardless, needed after changing the
-embedder model (mixing vectors from two models silently breaks search
-rather than erroring) or to recover from a suspect index. A run's stats line
-also reports documents with no extractable text and documents that failed
-to embed or store, so a misconfigured embedder is visible on the page
-instead of just showing zero chunks written.
+Configure the embedder once, under **Search** (not per instance): point it at
+a local sidecar such as [Ollama](https://ollama.com) — the form is pre-filled
+with the common default, `http://host.docker.internal:11434` running
+`nomic-embed-text`. Saving a URL there automatically starts indexing every
+existing instance that doesn't have one yet, and every new instance from then
+on; **Update index** and **Rebuild from scratch** on an instance's own page
+are there for a manual re-run, not a required step. Results below a relevance
+floor are dropped rather than returned as noise, and a run's stats line
+reports documents with no extractable text or that failed to embed, so a
+misconfigured embedder is visible on the page instead of silently indexing
+nothing.

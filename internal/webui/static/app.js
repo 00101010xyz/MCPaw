@@ -186,3 +186,22 @@
 
   filter("");
 })();
+
+/* Auto-submitting selects — a <select data-autosubmit> resubmits its form on
+ * change, so picking an option is the action instead of picking-then-a-
+ * separate-confirm-click (see docs/ARCHITECTURE.md "Web UI conventions").
+ * This has to live here rather than an inline onchange="…" attribute: the
+ * page's CSP (script-src 'self' 'nonce-…') blocks inline event-handler
+ * attributes outright — nonces do not cover them, only actual <script>
+ * elements — so any interactivity has to go through this file. */
+(function () {
+  "use strict";
+  var selects = document.querySelectorAll("select[data-autosubmit]");
+  for (var i = 0; i < selects.length; i++) {
+    selects[i].addEventListener("change", function (event) {
+      if (event.target.form) {
+        event.target.form.submit();
+      }
+    });
+  }
+})();

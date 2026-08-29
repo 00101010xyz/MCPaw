@@ -3,12 +3,14 @@ kind: Connector
 metadata:
   id: gitea
   name: Gitea
-  version: 1.0.0
+  version: 2.0.0
   description: >-
-    Read-only access to one repository on a Gitea instance — self-hosted or
-    gitea.com. Lets an MCP client browse a repository's file tree and read
-    file contents; also the basis for semantic search over the repository's
-    text files (see internal/index/source/gitea).
+    Read-only access to Gitea repositories — self-hosted or gitea.com. Lets
+    an MCP client browse a repository's file tree and read file contents;
+    also the basis for semantic search, which by default indexes every
+    repository your API token can see (see internal/index/source/gitea). A
+    token is what makes this connector useful — without one, there is
+    little or nothing to find.
   documentation: https://docs.gitea.com/api/next
   tags: [gitea, git, repository, code, read-only]
 
@@ -23,10 +25,6 @@ spec:
       http://host.docker.internal:3000.
 
   auth:
-    # A public repository needs no credential; a private one, or write
-    # access, needs a personal access token. Declaring the scheme always and
-    # leaving the secret unset simply omits the header, the same pattern the
-    # Zotero connector uses for its own optional API key.
     type: apiKey
     in: header
     name: Authorization
@@ -34,32 +32,39 @@ spec:
 
   variables:
     - name: owner
-      description: Repository owner — a user or organisation name.
-      required: true
+      description: >-
+        Index only this one repository's owner (a user or organisation
+        name), instead of every repository your token can see. Leave empty,
+        together with repo, for the default behaviour.
+      required: false
+      advanced: true
       pattern: '^[\w.-]{1,255}$'
       example: octocat
     - name: repo
-      description: Repository name.
-      required: true
+      description: Paired with owner, the one repository name to index.
+      required: false
+      advanced: true
       pattern: '^[\w.-]{1,255}$'
       example: my-thesis
     - name: ref
       description: >-
-        Branch, tag or commit to read and index, e.g. main or master. Gitea
-        has no single universal default branch name, so this must be set
-        explicitly rather than guessed. A branch name containing a slash
-        (e.g. release/1.0) is not supported here — it is used as a single
-        URL path segment upstream.
-      required: true
+        Branch, tag or commit to index, when owner and repo are also set —
+        otherwise each repository's own default branch is used
+        automatically. A branch name containing a slash (e.g. release/1.0)
+        is not supported here, since it is used as a single URL path
+        segment upstream.
+      required: false
+      advanced: true
       example: main
 
   secrets:
     - name: token
       description: >-
         Gitea personal access token (Settings → Applications → Generate New
-        Token), needed for a private repository or to raise the anonymous
-        rate limit. Leave empty for a public repository accessed
-        occasionally.
+        Token) with read access to Repository. Required for indexing: the
+        repository-listing tool this connector's semantic search relies on
+        needs an authenticated identity, and a public repository accessed
+        anonymously is also subject to a much lower rate limit.
       required: false
 
   defaults:
@@ -71,21 +76,65 @@ spec:
     maxConcurrent: 4
 
   tools:
-    - name: gitea_get_repo
-      title: Get repository info
+    - name: gitea_list_repos
+      title: List accessible repositories
       description: >-
-        Fetch metadata for the configured repository — description, default
-        branch, size, star/fork counts. Useful to confirm the connection and
-        to discover the repository's actual default branch name.
+        List repositories the configured token can see — owned, collaborator
+        access, or organisation membership — newest first, one page at a
+        time. Each entry includes owner.login, name, default_branch and
+        visibility. Without a token this typically returns nothing, since it
+        asks Gitea for "the authenticated user's" repositories.
       annotations:
         readOnlyHint: true
         openWorldHint: false
       inputSchema:
         type: object
         additionalProperties: false
+        properties:
+          page:
+            type: integer
+            description: Page number, starting at 1.
+            minimum: 1
+          limit:
+            type: integer
+            description: Repositories per page.
+            minimum: 1
+            maximum: 50
       request:
         method: GET
-        path: /api/v1/repos/{{vars.owner}}/{{vars.repo}}
+        path: /api/v1/user/repos
+        query:
+          page: "{{input.page|default:1}}"
+          limit: "{{input.limit|default:50}}"
+      response:
+        successCodes: [200]
+        format: json
+
+    - name: gitea_get_repo
+      title: Get repository info
+      description: >-
+        Fetch metadata for one repository — description, default branch,
+        size, star/fork counts. Useful to confirm access and discover a
+        repository's actual default branch name.
+      annotations:
+        readOnlyHint: true
+        openWorldHint: false
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required: [owner, repo]
+        properties:
+          owner:
+            type: string
+            description: Repository owner — a user or organisation name.
+            pattern: '^[\w.-]{1,255}$'
+          repo:
+            type: string
+            description: Repository name.
+            pattern: '^[\w.-]{1,255}$'
+      request:
+        method: GET
+        path: /api/v1/repos/{{input.owner}}/{{input.repo}}
       response:
         successCodes: [200]
         format: json
@@ -93,20 +142,33 @@ spec:
     - name: gitea_list_tree
       title: List repository files
       description: >-
-        List every file and directory in the repository at the configured
-        ref, recursively, as a flat array of {path, type, sha, size}. Use
-        this to find a file's blob SHA before reading it with
-        gitea_get_file. Large repositories may be truncated by the upstream
-        API; the response's "truncated" field says so.
+        List every file and directory in one repository at one ref,
+        recursively, as a flat array of {path, type, sha, size}. Use this to
+        find a file's blob SHA before reading it with gitea_get_file. Large
+        repositories may be truncated by the upstream API; the response's
+        "truncated" field says so.
       annotations:
         readOnlyHint: true
         openWorldHint: false
       inputSchema:
         type: object
         additionalProperties: false
+        required: [owner, repo, ref]
+        properties:
+          owner:
+            type: string
+            description: Repository owner — a user or organisation name.
+            pattern: '^[\w.-]{1,255}$'
+          repo:
+            type: string
+            description: Repository name.
+            pattern: '^[\w.-]{1,255}$'
+          ref:
+            type: string
+            description: Branch, tag or commit, e.g. main.
       request:
         method: GET
-        path: /api/v1/repos/{{vars.owner}}/{{vars.repo}}/git/trees/{{vars.ref}}
+        path: /api/v1/repos/{{input.owner}}/{{input.repo}}/git/trees/{{input.ref}}
         query:
           recursive: "true"
       response:
@@ -126,15 +188,23 @@ spec:
       inputSchema:
         type: object
         additionalProperties: false
-        required: [sha]
+        required: [owner, repo, sha]
         properties:
+          owner:
+            type: string
+            description: Repository owner — a user or organisation name.
+            pattern: '^[\w.-]{1,255}$'
+          repo:
+            type: string
+            description: Repository name.
+            pattern: '^[\w.-]{1,255}$'
           sha:
             type: string
             description: Blob SHA, from gitea_list_tree's "sha" field for the desired path.
             pattern: '^[0-9a-fA-F]{4,64}$'
       request:
         method: GET
-        path: /api/v1/repos/{{vars.owner}}/{{vars.repo}}/git/blobs/{{input.sha}}
+        path: /api/v1/repos/{{input.owner}}/{{input.repo}}/git/blobs/{{input.sha}}
       response:
         successCodes: [200]
         format: json

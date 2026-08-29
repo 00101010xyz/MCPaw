@@ -45,11 +45,13 @@
   <p class="hint">{{.Compiled.Manifest.Spec.BaseURL.Description}}</p>
 
   {{range .Compiled.Variables}}
+  {{if not .Advanced}}
   <label for="var_{{.Name}}">{{.Name}}{{if .Required}} <span class="req">*</span>{{end}}</label>
   <input id="var_{{.Name}}" name="var_{{.Name}}" type="text"
          value="{{index $d.Form.Variables .Name}}" placeholder="{{.Default}}"
          {{if .Pattern}}pattern="{{.Pattern}}"{{end}}>
   <p class="hint">{{.Description}}</p>
+  {{end}}
   {{end}}
 
   {{if .Compiled.Manifest.Spec.BaseURL.RequiresPrivateNetwork}}
@@ -66,6 +68,16 @@
 
   <details class="advanced">
     <summary>Advanced</summary>
+
+    {{range .Compiled.Variables}}
+    {{if .Advanced}}
+    <label for="var_{{.Name}}">{{.Name}}{{if .Required}} <span class="req">*</span>{{end}}</label>
+    <input id="var_{{.Name}}" name="var_{{.Name}}" type="text"
+           value="{{index $d.Form.Variables .Name}}" placeholder="{{.Default}}"
+           {{if .Pattern}}pattern="{{.Pattern}}"{{end}}>
+    <p class="hint">{{.Description}}</p>
+    {{end}}
+    {{end}}
 
     <label class="check">
       <input type="checkbox" name="allow_private_network" {{if $d.Form.AllowPrivateNetwork}}checked{{end}}>

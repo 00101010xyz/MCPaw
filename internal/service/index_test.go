@@ -286,8 +286,9 @@ func TestIndexerReindexEndToEndGitea(t *testing.T) {
 	if len(hits) == 0 {
 		t.Fatal("Search returned no hits for text known to be indexed")
 	}
-	if hits[0].ItemKey != "chapters/intro.md" || hits[0].AttachmentKey != "chapters/intro.md" {
-		t.Errorf("hit = %+v, want ItemKey=AttachmentKey=chapters/intro.md", hits[0])
+	const wantKey = "octocat/thesis:chapters/intro.md"
+	if hits[0].ItemKey != wantKey || hits[0].AttachmentKey != wantKey {
+		t.Errorf("hit = %+v, want ItemKey=AttachmentKey=%s", hits[0], wantKey)
 	}
 	if !strings.HasPrefix(hits[0].Text, "Introduction\n\n") {
 		t.Errorf("hit text = %q, want it to carry the heading breadcrumb from ChunkHeading", hits[0].Text)
@@ -547,7 +548,7 @@ func TestIndexerUpdatePrunesDocumentDeletedUpstream(t *testing.T) {
 		t.Fatalf("LoadAll: %v", err)
 	}
 	for _, c := range all {
-		if c.AttachmentKey == "delete.md" {
+		if c.AttachmentKey == "octocat/thesis:delete.md" {
 			t.Error("delete.md's chunks are still in the index after being pruned")
 		}
 	}
@@ -556,7 +557,7 @@ func TestIndexerUpdatePrunesDocumentDeletedUpstream(t *testing.T) {
 		t.Fatalf("ListDocuments: %v", err)
 	}
 	for _, d := range docs {
-		if d.AttachmentKey == "delete.md" {
+		if d.AttachmentKey == "octocat/thesis:delete.md" {
 			t.Error("delete.md's bookkeeping row is still present after being pruned")
 		}
 	}
@@ -602,7 +603,7 @@ func TestIndexerUpdateSkipsPruningWhenCrawlWasTruncated(t *testing.T) {
 	}
 	found := false
 	for _, d := range docs {
-		if d.AttachmentKey == "maybe.md" {
+		if d.AttachmentKey == "octocat/thesis:maybe.md" {
 			found = true
 		}
 	}

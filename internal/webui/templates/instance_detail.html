@@ -111,11 +111,13 @@
     <input id="base_url" name="base_url" type="url" value="{{$inst.BaseURL}}" required>
 
     {{range $d.Detail.Variables}}
+    {{if not .Def.Advanced}}
     <label for="var_{{.Def.Name}}">{{.Def.Name}}{{if .Def.Required}} <span class="req">*</span>{{end}}</label>
     <input id="var_{{.Def.Name}}" name="var_{{.Def.Name}}" type="text"
            value="{{.Value}}" placeholder="{{.Def.Default}}"
            {{if .Def.Pattern}}pattern="{{.Def.Pattern}}"{{end}}>
     <p class="hint">{{.Def.Description}}{{if .Def.Default}} Default <code>{{.Def.Default}}</code>.{{end}}</p>
+    {{end}}
     {{end}}
 
     <label class="check">
@@ -125,6 +127,16 @@
 
     <details class="advanced">
       <summary>Advanced</summary>
+
+      {{range $d.Detail.Variables}}
+      {{if .Def.Advanced}}
+      <label for="var_{{.Def.Name}}">{{.Def.Name}}{{if .Def.Required}} <span class="req">*</span>{{end}}</label>
+      <input id="var_{{.Def.Name}}" name="var_{{.Def.Name}}" type="text"
+             value="{{.Value}}" placeholder="{{.Def.Default}}"
+             {{if .Def.Pattern}}pattern="{{.Def.Pattern}}"{{end}}>
+      <p class="hint">{{.Def.Description}}{{if .Def.Default}} Default <code>{{.Def.Default}}</code>.{{end}}</p>
+      {{end}}
+      {{end}}
 
       <div class="field-row">
         <div>

@@ -182,7 +182,7 @@ func TestGiteaConnectorShape(t *testing.T) {
 		t.Fatal("gitea connector not found")
 	}
 
-	for _, want := range []string{"gitea_get_repo", "gitea_list_tree", "gitea_get_file"} {
+	for _, want := range []string{"gitea_list_repos", "gitea_get_repo", "gitea_list_tree", "gitea_get_file"} {
 		tool, ok := gitea.Tool(want)
 		if !ok {
 			t.Errorf("missing tool %s", want)
@@ -196,8 +196,10 @@ func TestGiteaConnectorShape(t *testing.T) {
 		}
 	}
 
-	// owner, repo and ref are all mandatory: there is no default repository,
-	// unlike Zotero's userId, which the local API always fixes at 0.
+	// owner, repo and ref are all optional: the default behaviour is to
+	// discover and index every repository the configured token can see (see
+	// gitea_list_repos), not one fixed repository — they exist only as an
+	// advanced override to index a single one instead.
 	for _, name := range []string{"owner", "repo", "ref"} {
 		var found *Variable
 		for _, v := range gitea.Variables() {
@@ -210,8 +212,8 @@ func TestGiteaConnectorShape(t *testing.T) {
 			t.Errorf("missing variable %s", name)
 			continue
 		}
-		if !found.Required {
-			t.Errorf("variable %s must be required", name)
+		if found.Required {
+			t.Errorf("variable %s must be optional", name)
 		}
 	}
 

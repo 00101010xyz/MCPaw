@@ -46,14 +46,30 @@ func compiledGitea(t *testing.T) *connector.Compiled {
 	return nil
 }
 
+// runtimeFor builds a Runtime pinned to a single owner/repo/ref — the
+// "advanced override" path — which is what most of this file's tests
+// exercise, since it lets each test's fixture server stay a flat map of
+// paths rather than juggling repository discovery too.
 func runtimeFor(t *testing.T, srv *httptest.Server) source.Runtime {
+	t.Helper()
+	return runtimeWithVars(t, srv, map[string]string{"owner": "octocat", "repo": "thesis", "ref": "main"})
+}
+
+// discoveryRuntimeFor builds a Runtime with no owner/repo/ref override, so
+// Crawl must discover repositories via gitea_list_repos instead.
+func discoveryRuntimeFor(t *testing.T, srv *httptest.Server) source.Runtime {
+	t.Helper()
+	return runtimeWithVars(t, srv, map[string]string{})
+}
+
+func runtimeWithVars(t *testing.T, srv *httptest.Server, vars map[string]string) source.Runtime {
 	t.Helper()
 	compiled := compiledGitea(t)
 	base, err := url.Parse(srv.URL)
 	if err != nil {
 		t.Fatalf("parsing test server URL: %v", err)
 	}
-	enabled := map[string]bool{}
+	enabled := map[string]bool{"gitea_get_repo": true}
 	for _, name := range requiredTools {
 		enabled[name] = true
 	}
@@ -61,7 +77,7 @@ func runtimeFor(t *testing.T, srv *httptest.Server) source.Runtime {
 		Executor: engine.New(engine.Config{}),
 		Target: &engine.Target{
 			InstanceID: "test-instance", Slug: "gitea", BaseURL: base,
-			Vars:             map[string]string{"owner": "octocat", "repo": "thesis", "ref": "main"},
+			Vars:             vars,
 			Policy:           upstream.EgressPolicy{AllowPrivateNetworks: true},
 			Timeout:          5 * time.Second,
 			MaxResponseBytes: 1 << 20,
@@ -130,26 +146,28 @@ func TestCrawlFiltersByExtension(t *testing.T) {
 	for _, g := range got {
 		byPath[g.Doc.AttachmentKey] = g
 	}
-	if _, ok := byPath["image.png"]; ok {
+	const readme = "octocat/thesis:README.md"
+	const intro = "octocat/thesis:chapters/intro.typ"
+	if _, ok := byPath["octocat/thesis:image.png"]; ok {
 		t.Error("image.png must not be fetched: it has no recognised extension")
 	}
-	if _, ok := byPath["docs"]; ok {
+	if _, ok := byPath["octocat/thesis:docs"]; ok {
 		t.Error("a tree entry of type \"tree\" (directory) must never be emitted as a document")
 	}
-	if _, ok := byPath["noext"]; ok {
+	if _, ok := byPath["octocat/thesis:noext"]; ok {
 		t.Error("a file with no extension must not be fetched")
 	}
-	if byPath["README.md"].Doc.HeadingDialect != index.DialectMarkdown {
-		t.Errorf("README.md dialect = %q, want markdown", byPath["README.md"].Doc.HeadingDialect)
+	if byPath[readme].Doc.HeadingDialect != index.DialectMarkdown {
+		t.Errorf("README.md dialect = %q, want markdown", byPath[readme].Doc.HeadingDialect)
 	}
-	if byPath["chapters/intro.typ"].Doc.HeadingDialect != index.DialectTypst {
-		t.Errorf("chapters/intro.typ dialect = %q, want typst", byPath["chapters/intro.typ"].Doc.HeadingDialect)
+	if byPath[intro].Doc.HeadingDialect != index.DialectTypst {
+		t.Errorf("chapters/intro.typ dialect = %q, want typst", byPath[intro].Doc.HeadingDialect)
 	}
-	if byPath["README.md"].Text != "# Chapter\n\nText." {
-		t.Errorf("README.md text = %q", byPath["README.md"].Text)
+	if byPath[readme].Text != "# Chapter\n\nText." {
+		t.Errorf("README.md text = %q", byPath[readme].Text)
 	}
-	if byPath["chapters/intro.typ"].Doc.ItemKey != "chapters/intro.typ" {
-		t.Errorf("ItemKey = %q, want the full path for this flat source", byPath["chapters/intro.typ"].Doc.ItemKey)
+	if byPath[intro].Doc.ItemKey != intro {
+		t.Errorf("ItemKey = %q, want %q (repo-prefixed, for this flat source)", byPath[intro].Doc.ItemKey, intro)
 	}
 }
 
@@ -204,11 +222,11 @@ func TestCrawlToleratesBlobFetchFailure(t *testing.T) {
 	for _, g := range got {
 		byPath[g.Doc.AttachmentKey] = g
 	}
-	if byPath["broken.md"].Text != "" {
-		t.Errorf("broken.md text = %q, want empty on fetch failure", byPath["broken.md"].Text)
+	if byPath["octocat/thesis:broken.md"].Text != "" {
+		t.Errorf("broken.md text = %q, want empty on fetch failure", byPath["octocat/thesis:broken.md"].Text)
 	}
-	if byPath["ok.md"].Text != "# OK\n\nFine." {
-		t.Errorf("ok.md text = %q", byPath["ok.md"].Text)
+	if byPath["octocat/thesis:ok.md"].Text != "# OK\n\nFine." {
+		t.Errorf("ok.md text = %q", byPath["octocat/thesis:ok.md"].Text)
 	}
 }
 
@@ -278,8 +296,106 @@ func TestCrawlReportsTruncatedWhenMaxFilesHit(t *testing.T) {
 	}
 }
 
+// Without an owner/repo override, Crawl must discover repositories via
+// gitea_list_repos and use each one's own reported default_branch, rather
+// than requiring the operator to name a repository at all.
+func TestCrawlDiscoversRepositoriesByDefault(t *testing.T) {
+	srv := jsonHandler(t, map[string]string{
+		"/api/v1/user/repos": `[
+			{"owner":{"login":"octocat"},"name":"thesis","default_branch":"main","empty":false},
+			{"owner":{"login":"octocat"},"name":"notes","default_branch":"trunk","empty":false},
+			{"owner":{"login":"octocat"},"name":"scratch","default_branch":"main","empty":true}
+		]`,
+		"/api/v1/repos/octocat/thesis/git/trees/main":     `{"tree":[{"path":"a.md","type":"blob","sha":"aaaaaaaa"}],"truncated":false}`,
+		"/api/v1/repos/octocat/thesis/git/blobs/aaaaaaaa": blobBody("# A\n\nFrom thesis."),
+		"/api/v1/repos/octocat/notes/git/trees/trunk":     `{"tree":[{"path":"b.md","type":"blob","sha":"bbbbbbbb"}],"truncated":false}`,
+		"/api/v1/repos/octocat/notes/git/blobs/bbbbbbbb":  blobBody("# B\n\nFrom notes."),
+	})
+
+	got := collect(t, discoveryRuntimeFor(t, srv))
+	if len(got) != 2 {
+		t.Fatalf("got %d emits, want 2 (one file from each non-empty repo): %+v", len(got), got)
+	}
+	byKey := map[string]emitted{}
+	for _, g := range got {
+		byKey[g.Doc.AttachmentKey] = g
+	}
+	if byKey["octocat/thesis:a.md"].Text != "# A\n\nFrom thesis." {
+		t.Errorf("thesis:a.md text = %q", byKey["octocat/thesis:a.md"].Text)
+	}
+	if byKey["octocat/notes:b.md"].Text != "# B\n\nFrom notes." {
+		t.Errorf("notes:b.md text = %q", byKey["octocat/notes:b.md"].Text)
+	}
+	// "scratch" is marked empty and must never have its tree listed at all —
+	// there is no fixture route for it, so a fetch there would 404 and the
+	// test would already have failed via a non-nil Crawl error.
+}
+
+// discoverRepos must paginate gitea_list_repos until a short page signals
+// the end, rather than assuming everything fits on page one.
+func TestCrawlDiscoveryPaginates(t *testing.T) {
+	old := repoPageSize
+	repoPageSize = 1
+	t.Cleanup(func() { repoPageSize = old })
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/user/repos", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("page") {
+		case "1":
+			fmt.Fprint(w, `[{"owner":{"login":"octocat"},"name":"thesis","default_branch":"main","empty":false}]`)
+		case "2":
+			fmt.Fprint(w, `[{"owner":{"login":"octocat"},"name":"notes","default_branch":"trunk","empty":false}]`)
+		default:
+			fmt.Fprint(w, `[]`)
+		}
+	})
+	mux.HandleFunc("/api/v1/repos/octocat/thesis/git/trees/main", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"tree":[{"path":"a.md","type":"blob","sha":"aaaaaaaa"}],"truncated":false}`)
+	})
+	mux.HandleFunc("/api/v1/repos/octocat/thesis/git/blobs/aaaaaaaa", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, blobBody("# A"))
+	})
+	mux.HandleFunc("/api/v1/repos/octocat/notes/git/trees/trunk", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"tree":[{"path":"b.md","type":"blob","sha":"bbbbbbbb"}],"truncated":false}`)
+	})
+	mux.HandleFunc("/api/v1/repos/octocat/notes/git/blobs/bbbbbbbb", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, blobBody("# B"))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	got := collect(t, discoveryRuntimeFor(t, srv))
+	if len(got) != 2 {
+		t.Fatalf("got %d emits, want 2 (one from each page's repository): %+v", len(got), got)
+	}
+}
+
+// The override path resolves the ref itself, via gitea_get_repo, when the
+// operator pins owner/repo but leaves ref unset.
+func TestCrawlOverrideResolvesDefaultBranchWhenRefUnset(t *testing.T) {
+	srv := jsonHandler(t, map[string]string{
+		"/api/v1/repos/octocat/thesis":                    `{"default_branch":"trunk"}`,
+		"/api/v1/repos/octocat/thesis/git/trees/trunk":    `{"tree":[{"path":"a.md","type":"blob","sha":"aaaaaaaa"}],"truncated":false}`,
+		"/api/v1/repos/octocat/thesis/git/blobs/aaaaaaaa": blobBody("# A\n\nBody."),
+	})
+	rt := runtimeWithVars(t, srv, map[string]string{"owner": "octocat", "repo": "thesis"})
+
+	got := collect(t, rt)
+	if len(got) != 1 {
+		t.Fatalf("got %d emits, want 1", len(got))
+	}
+	if got[0].Doc.AttachmentKey != "octocat/thesis:a.md" {
+		t.Errorf("AttachmentKey = %q", got[0].Doc.AttachmentKey)
+	}
+}
+
 func TestRequiredToolsMatchesTheToolsActuallyCalled(t *testing.T) {
-	want := map[string]bool{"gitea_list_tree": true, "gitea_get_file": true}
+	want := map[string]bool{"gitea_list_repos": true, "gitea_list_tree": true, "gitea_get_file": true}
 	got := Crawler{}.RequiredTools()
 	if len(got) != len(want) {
 		t.Fatalf("RequiredTools = %v, want exactly %v", got, want)

@@ -103,6 +103,11 @@ type Variable struct {
 	Pattern     string   `yaml:"pattern,omitempty"     json:"pattern,omitempty"`
 	Enum        []string `yaml:"enum,omitempty"        json:"enum,omitempty"`
 	Example     string   `yaml:"example,omitempty"     json:"example,omitempty"`
+	// Advanced hides this variable behind the instance form's Advanced
+	// section rather than the main flow — for a variable most operators
+	// should leave alone, such as an override that narrows an otherwise
+	// automatic default.
+	Advanced bool `yaml:"advanced,omitempty" json:"advanced,omitempty"`
 }
 
 // Secret is an operator-supplied credential, stored encrypted and never

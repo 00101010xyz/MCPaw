@@ -223,6 +223,23 @@ type ResponseSpec struct {
 	// MaxBytes caps this tool's response body, overriding the instance limit
 	// downward only.
 	MaxBytes int64 `yaml:"maxBytes,omitempty" json:"maxBytes,omitempty"`
+
+	// DecodeBase64 decodes the selected string value from base64 before it is
+	// returned — for an upstream field that is itself base64-encoded (a git
+	// blob's content, say), so the MCP client receives readable text instead
+	// of having to decode it itself. Only meaningful together with Select.
+	DecodeBase64 bool `yaml:"decodeBase64,omitempty" json:"decodeBase64,omitempty"`
+
+	// Paginate slices the response's text into one bounded chunk per call,
+	// using the tool's own input.offset/input.limit, instead of returning a
+	// single large blob in full. It applies to a plain-text response
+	// (format: text) or, together with Select, to a string field of a JSON
+	// response — a tool declaring this must also declare offset/limit in its
+	// inputSchema. Meant for a single large document with no natural
+	// upstream pagination (a file's content, a fulltext dump); an endpoint
+	// that already returns a list should paginate that list with the
+	// upstream's own limit/offset instead.
+	Paginate bool `yaml:"paginate,omitempty" json:"paginate,omitempty"`
 }
 
 // maxManifestBytes bounds an uploaded manifest. Parsing untrusted YAML is the

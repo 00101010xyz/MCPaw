@@ -3,7 +3,7 @@ kind: Connector
 metadata:
   id: linkding
   name: Linkding
-  version: 1.0.0
+  version: 1.1.0
   description: >-
     Read-only access to a Linkding bookmark manager. Lets an MCP client search
     and read bookmarks, and read the archived HTML snapshot Linkding took of
@@ -177,12 +177,15 @@ spec:
         format: json
 
     - name: linkding_get_asset_content
-      title: Get a snapshot or file's raw content
+      title: Get a snapshot or file's whole raw content
       description: >-
-        Fetch one asset's raw content — for an asset_type "snapshot" this is
-        the full archived HTML of the page as Linkding saved it, not a JSON
-        wrapper. Not meant for an "upload" asset that is actually an image
-        or other binary file; expect an unreadable response for those.
+        Fetch one asset's whole raw content in a single call — for an
+        asset_type "snapshot" this is the full archived HTML of the page as
+        Linkding saved it, not a JSON wrapper, which can easily consume a
+        model's entire context; prefer linkding_read_asset_content instead,
+        which returns it a bounded page at a time. Not meant for an
+        "upload" asset that is actually an image or other binary file;
+        expect an unreadable response for those.
       annotations:
         readOnlyHint: true
         openWorldHint: false
@@ -205,4 +208,50 @@ spec:
       response:
         successCodes: [200]
         format: text
+        maxBytes: 8388608
+
+    - name: linkding_read_asset_content
+      title: Read a snapshot or file's content, a page at a time
+      description: >-
+        Read one asset's raw content (for an asset_type "snapshot", the
+        archived page's HTML) a bounded page at a time — the preferred way
+        to read it over linkding_get_asset_content, which returns
+        everything in one call and can consume a model's entire context for
+        a large page. Starts at offset 0 by default; when the response's
+        has_more is true, call again with offset set to its next_offset to
+        continue. Not meant for an "upload" asset that is actually an image
+        or other binary file.
+      annotations:
+        readOnlyHint: true
+        openWorldHint: false
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required: [bookmarkId, assetId]
+        properties:
+          bookmarkId:
+            type: integer
+            description: Bookmark id, from linkding_list_bookmarks.
+            minimum: 1
+          assetId:
+            type: integer
+            description: Asset id, from linkding_list_assets.
+            minimum: 1
+          offset:
+            type: integer
+            description: Character offset to start reading from. Defaults to 0.
+            minimum: 0
+          limit:
+            type: integer
+            description: Maximum characters to return. Defaults to 4000, capped at 20000.
+            minimum: 1
+            maximum: 20000
+      request:
+        method: GET
+        path: /api/bookmarks/{{input.bookmarkId}}/assets/{{input.assetId}}/download/
+      response:
+        successCodes: [200]
+        format: text
+        paginate: true
+        structured: true
         maxBytes: 8388608

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -121,6 +122,38 @@ spec:
       response:
         successCodes: [200]
         format: text
+    - name: paged_text
+      description: Returns paginated plain text.
+      inputSchema:
+        type: object
+        additionalProperties: false
+        properties:
+          offset: {type: integer, minimum: 0}
+          limit: {type: integer, minimum: 1, maximum: 20000}
+      request:
+        method: GET
+        path: /paged
+      response:
+        successCodes: [200]
+        format: text
+        paginate: true
+    - name: paged_blob
+      description: Returns a base64-encoded field, decoded and paginated.
+      inputSchema:
+        type: object
+        additionalProperties: false
+        properties:
+          offset: {type: integer, minimum: 0}
+          limit: {type: integer, minimum: 1, maximum: 20000}
+      request:
+        method: GET
+        path: /blob
+      response:
+        successCodes: [200]
+        format: json
+        select: content
+        decodeBase64: true
+        paginate: true
 `
 
 func testConnector(t *testing.T) *connector.Compiled {
@@ -659,5 +692,181 @@ func TestHostHeaderOverrideRejectsControlCharacters(t *testing.T) {
 	e, ok := AsError(err)
 	if !ok || e.Kind != KindInvalidArguments {
 		t.Fatalf("got %v, want a rejected host header override", err)
+	}
+}
+
+// decodePage unmarshals a paginated Result's Data (via its JSON rendering, the
+// same bytes an MCP client actually receives) into a pageResult, rather than
+// reaching into the unexported field directly.
+func decodePage(t *testing.T, res *Result) pageResult {
+	t.Helper()
+	if !res.IsJSON {
+		t.Fatalf("result is not JSON: %+v", res)
+	}
+	var p pageResult
+	if err := json.Unmarshal([]byte(res.Text), &p); err != nil {
+		t.Fatalf("Result.Text is not a valid page envelope: %v (%q)", err, res.Text)
+	}
+	return p
+}
+
+func TestPaginatedTextResponse(t *testing.T) {
+	body := strings.Repeat("abcdefghij", 500) // 5000 runes
+	srv, _ := newServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	})
+	conn := testConnector(t)
+	target := testTarget(t, srv.URL)
+
+	res, err := exec(t, target, conn, "paged_text", map[string]any{"limit": 100})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	page := decodePage(t, res)
+	if page.Offset != 0 || page.Length != 100 || page.TotalLength != 5000 {
+		t.Fatalf("unexpected first page: %+v", page)
+	}
+	if !page.HasMore || page.NextOffset != 100 {
+		t.Fatalf("unexpected continuation state: %+v", page)
+	}
+	if page.Text != body[:100] {
+		t.Fatalf("page text = %q", page.Text)
+	}
+
+	// Following next_offset must reach the end with has_more false.
+	res, err = exec(t, target, conn, "paged_text", map[string]any{"offset": 4990, "limit": 100})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	last := decodePage(t, res)
+	if last.HasMore {
+		t.Fatalf("expected the final page to report has_more=false: %+v", last)
+	}
+	if last.Length != 10 || last.NextOffset != 5000 {
+		t.Fatalf("unexpected final page: %+v", last)
+	}
+}
+
+func TestPaginatedTextResponseDefaultsAndClamps(t *testing.T) {
+	body := strings.Repeat("x", defaultPageChars+500)
+	srv, _ := newServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	})
+	conn := testConnector(t)
+	target := testTarget(t, srv.URL)
+
+	// No offset/limit supplied: defaults to offset 0, defaultPageChars.
+	res, err := exec(t, target, conn, "paged_text", map[string]any{})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	page := decodePage(t, res)
+	if page.Offset != 0 || page.Length != defaultPageChars || !page.HasMore {
+		t.Fatalf("unexpected default page: %+v", page)
+	}
+
+	// A requested limit above maxPageChars is clamped, not rejected — the tool's
+	// own schema already caps "limit" at 20000, so this exercises the engine's
+	// own clamp as a second line of defense.
+	res, err = exec(t, target, conn, "paged_text", map[string]any{"limit": maxPageChars})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	page = decodePage(t, res)
+	if page.Length != len(body) {
+		t.Fatalf("page length = %d, want the whole %d-char body", page.Length, len(body))
+	}
+}
+
+func TestPaginatedTruncatedTextIsNotPaginated(t *testing.T) {
+	// A response that hit the instance's byte cap is truncated before pagination
+	// ever runs — mapResponse must report the truncation note, not a half-sliced
+	// page envelope.
+	srv, _ := newServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(strings.Repeat("y", 2<<20)))
+	})
+	conn := testConnector(t)
+	target := testTarget(t, srv.URL)
+	target.MaxResponseBytes = 1024
+
+	res, err := exec(t, target, conn, "paged_text", map[string]any{})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res.IsJSON {
+		t.Fatalf("a truncated response must not be rendered as a page envelope: %+v", res)
+	}
+	if !strings.Contains(res.Text, "truncated") {
+		t.Fatalf("expected a truncation note, got %q", res.Text)
+	}
+}
+
+func TestBase64DecodedAndPaginatedJSONField(t *testing.T) {
+	plain := "line one\nline two\nline three"
+	encoded := base64.StdEncoding.EncodeToString([]byte(plain))
+	srv, _ := newServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		enc, _ := json.Marshal(map[string]string{"content": encoded})
+		_, _ = w.Write(enc)
+	})
+	conn := testConnector(t)
+	target := testTarget(t, srv.URL)
+
+	res, err := exec(t, target, conn, "paged_blob", map[string]any{})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	page := decodePage(t, res)
+	if page.Text != plain {
+		t.Fatalf("decoded text = %q, want %q", page.Text, plain)
+	}
+	if page.TotalLength != len(plain) || page.HasMore {
+		t.Fatalf("unexpected page metadata: %+v", page)
+	}
+}
+
+// Gitea's blob API wraps its base64 in newlines every 76 characters — decoding
+// must strip that whitespace rather than failing on it.
+func TestBase64DecodeToleratesEmbeddedWhitespace(t *testing.T) {
+	plain := strings.Repeat("The quick brown fox. ", 20)
+	encoded := base64.StdEncoding.EncodeToString([]byte(plain))
+	var wrapped strings.Builder
+	for i := 0; i < len(encoded); i += 20 {
+		end := i + 20
+		if end > len(encoded) {
+			end = len(encoded)
+		}
+		wrapped.WriteString(encoded[i:end])
+		wrapped.WriteString("\n")
+	}
+	srv, _ := newServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		enc, _ := json.Marshal(map[string]string{"content": wrapped.String()})
+		_, _ = w.Write(enc)
+	})
+	conn := testConnector(t)
+	target := testTarget(t, srv.URL)
+
+	res, err := exec(t, target, conn, "paged_blob", map[string]any{"limit": maxPageChars})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	page := decodePage(t, res)
+	if page.Text != plain {
+		t.Fatalf("decoded text = %q, want %q", page.Text, plain)
+	}
+}
+
+func TestBase64DecodeFailureIsReported(t *testing.T) {
+	srv, _ := newServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"content":"not-valid-base64!!!"}`))
+	})
+	conn := testConnector(t)
+
+	_, err := exec(t, testTarget(t, srv.URL), conn, "paged_blob", map[string]any{})
+	e, ok := AsError(err)
+	if !ok || e.Kind != KindUpstreamFailure {
+		t.Fatalf("got %v, want an upstream_failure error for invalid base64", err)
 	}
 }

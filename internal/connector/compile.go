@@ -110,6 +110,8 @@ type CompiledTool struct {
 	SuccessCodes   map[int]bool
 	SelectPath     []string
 	IncludeHeaders []string
+	DecodeBase64   bool
+	Paginate       bool
 }
 
 // Name returns the tool's MCP name.
@@ -399,7 +401,7 @@ func compileTool(t *Tool, c *Compiled, p *problems) *CompiledTool {
 	}
 	ct.Body = compileBody(where, t.Request.Body, method, c, inputProps, p)
 
-	compileResponse(where, &t.Response, ct, p)
+	compileResponse(where, &t.Response, ct, inputProps, p)
 	return ct
 }
 
@@ -626,7 +628,7 @@ func compileBodyNode(where string, v any, c *Compiled, inputProps map[string]boo
 	}
 }
 
-func compileResponse(where string, r *ResponseSpec, ct *CompiledTool, p *problems) {
+func compileResponse(where string, r *ResponseSpec, ct *CompiledTool, inputProps map[string]bool, p *problems) {
 	for _, code := range r.SuccessCodes {
 		if code < 100 || code > 599 {
 			p.addf("%s: response.successCodes contains invalid status %d", where, code)
@@ -658,6 +660,17 @@ func compileResponse(where string, r *ResponseSpec, ct *CompiledTool, p *problem
 		}
 		ct.IncludeHeaders = append(ct.IncludeHeaders, h)
 	}
+	if r.DecodeBase64 && r.Select == "" {
+		p.addf("%s: response.decodeBase64 requires response.select", where)
+	}
+	ct.DecodeBase64 = r.DecodeBase64
+	if r.Paginate && r.Format == FormatJSON && r.Select == "" {
+		p.addf("%s: response.paginate on a json response requires response.select", where)
+	}
+	if r.Paginate && (!inputProps["offset"] || !inputProps["limit"]) {
+		p.addf("%s: response.paginate requires inputSchema to declare both offset and limit", where)
+	}
+	ct.Paginate = r.Paginate
 }
 
 // checkRefs verifies that every variable and secret a template reads is

@@ -1,0 +1,42 @@
+{{define "content"}}
+{{$d := .Data}}
+{{$csrf := .CSRF}}
+
+<div class="page-head"><h1>Usage log settings</h1></div>
+
+<section class="panel panel--roomy">
+  <p class="lede">
+    Controls the <a href="/usage">usage log</a> — a record of MCP tool calls, separate
+    from the <a href="/audit">audit log</a> and its own 90-day retention. This log is
+    capped by size instead: once it reaches the limit below, the oldest entries are
+    deleted first to make room for new ones.
+  </p>
+  <form method="post" action="/settings/usage">
+    <input type="hidden" name="csrf_token" value="{{$csrf}}">
+
+    <label for="level">Log level</label>
+    <select id="level" name="level">
+      {{range $d.Levels}}
+        <option value="{{.}}"{{if eq . $d.Level}} selected{{end}}>
+          {{if eq . "off"}}Off — record nothing
+          {{else if eq . "metadata"}}Metadata — instance, tool, caller, outcome, timing
+          {{else}}Full — metadata plus the call's arguments and response
+          {{end}}
+        </option>
+      {{end}}
+    </select>
+    <p class="hint">
+      Full includes whatever a caller sent and got back, which can carry the content of
+      a query or another connector's personal data — pick it deliberately, not by default.
+    </p>
+
+    <label for="max_mb">Size cap</label>
+    <div class="field-row">
+      <input id="max_mb" name="max_mb" type="number" min="1" value="{{$d.MaxMB}}">
+      <span class="hint" style="align-self:center">MiB</span>
+    </div>
+
+    <button type="submit" class="btn btn--primary btn--submit">Save</button>
+  </form>
+</section>
+{{end}}

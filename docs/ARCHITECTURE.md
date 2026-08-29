@@ -179,6 +179,8 @@ cmd/mcpaw/                  composition root + CLI (serve, healthcheck, keygen)
 internal/domain/            entities, value objects, sentinel errors
 internal/store/              repository interfaces
 internal/store/sqlitestore/  SQLite adapter + embedded migrations
+internal/usage/              usage-log SQLite store (usage.db) — separate from mcpaw.db
+                              on purpose, so its own size cap can never touch platform data
 internal/secrets/            keyring, AES-GCM sealer, argon2id, token hashing
 internal/connector/          manifest schema, validation, registry, builtin manifests
 internal/connector/openapi/  OpenAPI 3 → manifest translator (not yet wired into the admin UI)

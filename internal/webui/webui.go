@@ -41,6 +41,7 @@ type Server struct {
 	tokens     *service.Tokens
 	audit      *service.Audit
 	indexer    *service.Indexer
+	usage      *service.Usage
 
 	pages   map[string]*template.Template
 	flashes *flashStore
@@ -63,6 +64,7 @@ type Config struct {
 	Tokens        *service.Tokens
 	Audit         *service.Audit
 	Indexer       *service.Indexer
+	Usage         *service.Usage
 	Logger        *slog.Logger
 	PublicURL     string
 	Version       string
@@ -94,7 +96,7 @@ func New(cfg Config) (*Server, error) {
 
 	return &Server{
 		users: cfg.Users, sessions: cfg.Sessions, instances: cfg.Instances,
-		connectors: cfg.Connectors, tokens: cfg.Tokens, audit: cfg.Audit, indexer: cfg.Indexer,
+		connectors: cfg.Connectors, tokens: cfg.Tokens, audit: cfg.Audit, indexer: cfg.Indexer, usage: cfg.Usage,
 		pages: pages, flashes: newFlashStore(2 * time.Minute), logger: cfg.Logger,
 		publicURL: strings.TrimRight(cfg.PublicURL, "/"), version: cfg.Version,
 		secureCookies: cfg.SecureCookies, sessionMaxAge: cfg.SessionMaxAge,
@@ -112,6 +114,7 @@ func New(cfg Config) (*Server, error) {
 var pageNames = []string{
 	"login", "setup", "account", "instances", "instance_new",
 	"instance_detail", "connectors", "tokens", "audit", "settings_search",
+	"usage", "settings_usage",
 }
 
 func parsePages() (map[string]*template.Template, error) {
@@ -228,6 +231,7 @@ func (s *Server) buildPalette(ctx context.Context) []paletteItem {
 		{Group: "Sections", Label: "Connectors", Search: "connectors import manifest", Href: "/connectors"},
 		{Group: "Sections", Label: "Semantic search", Search: "semantic search embedder settings", Href: "/settings/semantic-search"},
 		{Group: "Sections", Label: "Tokens", Search: "tokens access bearer", Href: "/tokens"},
+		{Group: "Sections", Label: "Usage log", Search: "usage log requests tool calls", Href: "/usage"},
 		{Group: "Sections", Label: "Audit log", Search: "audit log events", Href: "/audit"},
 		{Group: "Sections", Label: "Account", Search: "account password", Href: "/account"},
 	}

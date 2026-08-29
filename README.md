@@ -78,6 +78,21 @@ Per-instance settings (base URL, variables, secrets, egress policy, timeouts, ra
 which tools are enabled) are configured through the web UI, not the environment — they
 belong to the database, not the process.
 
+## Usage log
+
+Every MCP tool call can be recorded to a separate `usage.db` under `MCPAW_DATA_DIR`, so an
+operator can see what a client has actually been calling — distinct from the audit log,
+which tracks administrative actions, not request traffic. Configure it under **Usage** →
+**Usage log settings**:
+
+- **Log level** — off, metadata (instance, tool, caller, outcome, timing — the default), or
+  full (metadata plus the call's arguments and response). Full can carry the content of a
+  caller's queries or another connector's personal data, so it's opt-in, not the default.
+- **Size cap** — once the log reaches this (1 GiB by default), the oldest entries are
+  deleted first to make room for new ones, checked periodically rather than on every call.
+
+**Clear log** on the Usage page wipes it immediately, without waiting for the cap.
+
 ## Development
 
 ```sh

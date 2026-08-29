@@ -46,120 +46,6 @@
   </div>
 </section>
 
-{{with $d.SearchIndex}}
-<section class="panel panel--tight">
-  <div class="panel__head"><h2>Semantic search</h2></div>
-  <p class="lede">
-    Finds passages in this library's PDF and snapshot text by meaning, so an MCP
-    client can pull a few relevant excerpts instead of a whole document. Configure
-    <code>embedderUrl</code> below to point at an embeddings sidecar (Ollama or
-    text-embeddings-inference), then build the index here. It only appears to
-    clients once it holds at least one chunk.
-  </p>
-  <dl class="facts">
-    <dt>Indexed chunks</dt><dd>{{.ChunkCount}}</dd>
-    <dt>State</dt>
-    <dd>
-      {{if .Status.Running}}<span class="tag tag--warn">indexing…</span>
-      {{else if .Status.LastError}}<span class="tag tag--warn">failed: {{.Status.LastError}}</span>
-      {{else if .ChunkCount}}<span class="tag tag--ok">ready</span>
-      {{else}}<span class="tag tag--off">not built</span>{{end}}
-    </dd>
-    {{if not .Status.FinishedAt.IsZero}}<dt>Last run</dt><dd>{{formatTime .Status.FinishedAt}} — {{.Status.ItemsProcessed}} items, {{.Status.ChunksIndexed}} chunks</dd>{{end}}
-  </dl>
-  <form method="post" action="/instances/{{$inst.ID}}/reindex" class="inline">
-    <input type="hidden" name="csrf_token" value="{{$csrf}}">
-    <button type="submit" class="btn" {{if .Status.Running}}disabled{{end}}>
-      {{if .ChunkCount}}Rebuild index{{else}}Build index{{end}}
-    </button>
-  </form>
-</section>
-{{end}}
-
-<section class="panel panel--roomy">
-  <div class="panel__head"><h2>Configuration</h2></div>
-  <form method="post" action="/instances/{{$inst.ID}}">
-    <input type="hidden" name="csrf_token" value="{{$csrf}}">
-
-    <label for="name">Display name</label>
-    <input id="name" name="name" type="text" value="{{$inst.Name}}" required maxlength="120">
-
-    <label for="description">Description</label>
-    <input id="description" name="description" type="text" value="{{$inst.Description}}" maxlength="300">
-
-    <label for="base_url">Upstream base URL</label>
-    <input id="base_url" name="base_url" type="url" value="{{$inst.BaseURL}}" required>
-
-    {{range $d.Detail.Variables}}
-    <label for="var_{{.Def.Name}}">{{.Def.Name}}{{if .Def.Required}} <span class="req">*</span>{{end}}</label>
-    <input id="var_{{.Def.Name}}" name="var_{{.Def.Name}}" type="text"
-           value="{{.Value}}" placeholder="{{.Def.Default}}"
-           {{if .Def.Pattern}}pattern="{{.Def.Pattern}}"{{end}}>
-    <p class="hint">{{.Def.Description}}{{if .Def.Default}} Default <code>{{.Def.Default}}</code>.{{end}}</p>
-    {{end}}
-
-    <fieldset>
-      <legend>Limits</legend>
-      <div class="field-row">
-        <div>
-          <label for="timeout_ms">Request timeout — ms</label>
-          <input id="timeout_ms" name="timeout_ms" type="number" min="500" max="120000" value="{{$inst.TimeoutMS}}">
-        </div>
-        <div>
-          <label for="rate_limit_per_min">Rate limit — per minute</label>
-          <input id="rate_limit_per_min" name="rate_limit_per_min" type="number" min="0" value="{{$inst.RateLimitPerMin}}">
-        </div>
-        <div>
-          <label for="max_concurrent">Concurrent calls</label>
-          <input id="max_concurrent" name="max_concurrent" type="number" min="1" max="64" value="{{$inst.MaxConcurrent}}">
-        </div>
-        <div>
-          <label for="max_response_bytes">Max response — bytes</label>
-          <input id="max_response_bytes" name="max_response_bytes" type="number" min="1024" value="{{$inst.MaxResponseBytes}}">
-        </div>
-      </div>
-      <p class="hint">
-        A rate limit of 0 disables throttling. Worst-case memory for this instance is
-        roughly concurrent calls × max response size.
-      </p>
-    </fieldset>
-
-    <fieldset>
-      <legend>Egress</legend>
-      <label class="check">
-        <input type="checkbox" name="allow_private_network" {{if $inst.AllowPrivateNetwork}}checked{{end}}>
-        Allow requests to loopback and private-network addresses
-      </label>
-      <p class="hint">
-        Required when the API runs on this machine or your LAN — the Zotero desktop app
-        included. Cloud instance-metadata addresses stay blocked regardless.
-      </p>
-
-      <label for="host_header_override">Host header override <span class="muted">— optional</span></label>
-      <input id="host_header_override" name="host_header_override" type="text"
-             value="{{$inst.HostHeaderOverride}}" placeholder="e.g. 127.0.0.1:23119">
-      <p class="hint">
-        Include the port, e.g. <code>127.0.0.1:23119</code> — a bare <code>127.0.0.1</code>
-        with no port is a different Host header and may still be rejected. Some local services
-        check the request's <code>Host</code> header as a defense against DNS rebinding and
-        reject anything but a loopback name on the exact port they listen on — Zotero's local
-        API is one. A container reaches such a service through a different address (like
-        <code>host.docker.internal</code>), which then gets rejected as the Host header unless
-        overridden here. Leave empty unless "Test connection" fails with
-        <code>400 Bad Request</code> while a direct <code>curl</code> from the host machine
-        succeeds.
-      </p>
-    </fieldset>
-
-    <label class="check">
-      <input type="checkbox" name="enabled" {{if $inst.Enabled}}checked{{end}}>
-      Serve this endpoint
-    </label>
-
-    <button type="submit" class="btn btn--primary btn--submit">Save configuration</button>
-  </form>
-</section>
-
 {{if $d.Detail.Secrets}}
 <section class="panel panel--tight">
   <div class="panel__head"><h2>Credentials</h2></div>
@@ -204,6 +90,141 @@
 </section>
 {{end}}
 
+{{with $d.SearchIndex}}
+<section class="panel panel--tight">
+  <div class="panel__head"><h2>Semantic search</h2></div>
+  <p class="lede">
+    Finds passages in this library by meaning, so an MCP client can pull a few relevant
+    excerpts instead of a whole document. The embedder is configured once for every
+    instance under <a href="/settings/semantic-search">Search</a>; build or refresh
+    this instance's own index below.
+  </p>
+
+  <dl class="facts">
+    <dt>Indexed chunks</dt><dd>{{.ChunkCount}}</dd>
+    <dt>State</dt>
+    <dd>
+      {{if .Status.Running}}<span class="tag tag--warn">indexing…</span>
+      {{else if .Status.LastError}}<span class="tag tag--warn">failed: {{.Status.LastError}}</span>
+      {{else if .ChunkCount}}<span class="tag tag--ok">ready</span>
+      {{else}}<span class="tag tag--off">not built</span>{{end}}
+    </dd>
+    {{if not .Status.FinishedAt.IsZero}}
+    <dt>Last run</dt>
+    <dd>
+      {{formatTime .Status.FinishedAt}} — {{.Status.ItemsProcessed}} examined,
+      {{.Status.ChunksIndexed}} chunks written{{if .Status.DocumentsSkipped}}, {{.Status.DocumentsSkipped}} unchanged{{end}}{{if .Status.DocumentsPruned}}, {{.Status.DocumentsPruned}} pruned{{end}}{{if .Status.DocumentsEmptyText}}, {{.Status.DocumentsEmptyText}} had no text{{end}}{{if .Status.DocumentsFailed}}, {{.Status.DocumentsFailed}} failed{{end}}
+    </dd>
+    {{end}}
+  </dl>
+  <div class="actions">
+    <form method="post" action="/instances/{{$inst.ID}}/reindex" class="inline">
+      <input type="hidden" name="csrf_token" value="{{$csrf}}">
+      <button type="submit" class="btn" {{if .Status.Running}}disabled{{end}}>
+        {{if .ChunkCount}}Update index{{else}}Build index{{end}}
+      </button>
+    </form>
+    {{if .ChunkCount}}
+    <form method="post" action="/instances/{{$inst.ID}}/reindex/rebuild" class="inline">
+      <input type="hidden" name="csrf_token" value="{{$csrf}}">
+      <button type="submit" class="btn" {{if .Status.Running}}disabled{{end}}>Rebuild from scratch</button>
+    </form>
+    {{end}}
+  </div>
+  <p class="hint">
+    Update only re-embeds documents whose content changed and removes ones no longer
+    found upstream. Rebuild re-embeds everything — needed after changing the embedder
+    model, since mixing vectors from two models silently breaks search rather than
+    erroring.
+  </p>
+</section>
+{{end}}
+
+<section class="panel panel--roomy">
+  <div class="panel__head"><h2>Configuration</h2></div>
+  <form method="post" action="/instances/{{$inst.ID}}">
+    <input type="hidden" name="csrf_token" value="{{$csrf}}">
+
+    <label for="name">Display name</label>
+    <input id="name" name="name" type="text" value="{{$inst.Name}}" required maxlength="120">
+
+    <label for="description">Description</label>
+    <input id="description" name="description" type="text" value="{{$inst.Description}}" maxlength="300">
+
+    <label for="base_url">Upstream base URL</label>
+    <input id="base_url" name="base_url" type="url" value="{{$inst.BaseURL}}" required>
+
+    {{range $d.Detail.Variables}}
+    {{if not .Def.Advanced}}
+    <label for="var_{{.Def.Name}}">{{.Def.Name}}{{if .Def.Required}} <span class="req">*</span>{{end}}</label>
+    <input id="var_{{.Def.Name}}" name="var_{{.Def.Name}}" type="text"
+           value="{{.Value}}" placeholder="{{.Def.Default}}"
+           {{if .Def.Pattern}}pattern="{{.Def.Pattern}}"{{end}}>
+    <p class="hint">{{.Def.Description}}{{if .Def.Default}} Default <code>{{.Def.Default}}</code>.{{end}}</p>
+    {{end}}
+    {{end}}
+
+    <label class="check">
+      <input type="checkbox" name="enabled" {{if $inst.Enabled}}checked{{end}}>
+      Serve this endpoint
+    </label>
+
+    <details class="advanced">
+      <summary>Advanced</summary>
+
+      {{range $d.Detail.Variables}}
+      {{if .Def.Advanced}}
+      <label for="var_{{.Def.Name}}">{{.Def.Name}}{{if .Def.Required}} <span class="req">*</span>{{end}}</label>
+      <input id="var_{{.Def.Name}}" name="var_{{.Def.Name}}" type="text"
+             value="{{.Value}}" placeholder="{{.Def.Default}}"
+             {{if .Def.Pattern}}pattern="{{.Def.Pattern}}"{{end}}>
+      <p class="hint">{{.Def.Description}}{{if .Def.Default}} Default <code>{{.Def.Default}}</code>.{{end}}</p>
+      {{end}}
+      {{end}}
+
+      <div class="field-row">
+        <div>
+          <label for="timeout_ms">Request timeout — ms</label>
+          <input id="timeout_ms" name="timeout_ms" type="number" min="500" max="120000" value="{{$inst.TimeoutMS}}">
+        </div>
+        <div>
+          <label for="rate_limit_per_min">Rate limit — per minute</label>
+          <input id="rate_limit_per_min" name="rate_limit_per_min" type="number" min="0" value="{{$inst.RateLimitPerMin}}">
+        </div>
+        <div>
+          <label for="max_concurrent">Concurrent calls</label>
+          <input id="max_concurrent" name="max_concurrent" type="number" min="1" max="64" value="{{$inst.MaxConcurrent}}">
+        </div>
+        <div>
+          <label for="max_response_bytes">Max response — bytes</label>
+          <input id="max_response_bytes" name="max_response_bytes" type="number" min="1024" value="{{$inst.MaxResponseBytes}}">
+        </div>
+      </div>
+      <p class="hint">0 disables rate limiting. Memory use is roughly concurrent calls × max response size.</p>
+
+      <label class="check">
+        <input type="checkbox" name="allow_private_network" {{if $inst.AllowPrivateNetwork}}checked{{end}}>
+        Allow requests to loopback and private-network addresses
+      </label>
+      <p class="hint">
+        Needed when the API runs on this machine or your LAN. Cloud instance-metadata
+        addresses stay blocked regardless.
+      </p>
+
+      <label for="host_header_override">Host header override <span class="muted">— optional</span></label>
+      <input id="host_header_override" name="host_header_override" type="text"
+             value="{{$inst.HostHeaderOverride}}" placeholder="e.g. 127.0.0.1:23119">
+      <p class="hint">
+        Only needed if "Test connection" 400s while a direct <code>curl</code> from the host
+        succeeds — some local services reject any Host header but a loopback name (Zotero's
+        local API is one). Include the port.
+      </p>
+    </details>
+
+    <button type="submit" class="btn btn--primary btn--submit">Save configuration</button>
+  </form>
+</section>
+
 <section class="panel panel--tight">
   <div class="panel__head"><h2>Tools</h2></div>
   <p class="lede">
@@ -238,6 +259,21 @@
                 {{if .Enabled}}enabled{{else}}disabled{{end}}
               </button>
             </form>
+          </td>
+        </tr>
+      {{end}}
+      {{with $d.SearchIndex}}
+        <tr>
+          <td data-label="Tool">
+            <code>{{.ToolName}}</code>
+            <p class="hint">{{.ToolDescription}}</p>
+          </td>
+          <td data-label="Method"><span class="muted">—</span></td>
+          <td data-label="Behaviour"><span class="tag tag--info">read only</span></td>
+          <td data-label="State">
+            {{if .Status.Running}}<span class="tag tag--warn">indexing…</span>
+            {{else if .ChunkCount}}<span class="tag tag--ok">active</span>
+            {{else}}<span class="tag tag--off">inactive</span>{{end}}
           </td>
         </tr>
       {{end}}

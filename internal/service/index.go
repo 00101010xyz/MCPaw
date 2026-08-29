@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -9,27 +11,35 @@ import (
 	"sync"
 	"time"
 
-	"github.com/00101010xyz/mcpaw/internal/connector"
 	"github.com/00101010xyz/mcpaw/internal/domain"
-	"github.com/00101010xyz/mcpaw/internal/engine"
 	"github.com/00101010xyz/mcpaw/internal/index"
+	"github.com/00101010xyz/mcpaw/internal/index/source"
+	"github.com/00101010xyz/mcpaw/internal/secrets"
 	"github.com/00101010xyz/mcpaw/internal/store"
+	"github.com/00101010xyz/mcpaw/internal/upstream"
 )
 
-// zoteroConnectorID is the only connector Phase 1 indexing understands how to
-// crawl: it calls specific Zotero tool names to enumerate items, find PDF and
-// snapshot attachments, and pull their extracted text. Generalising this to
-// any connector (via a declarative "how to enumerate content" block in the
-// manifest) is future work, not something to guess at here.
-const zoteroConnectorID = "zotero-local"
+// platformSecretScope is the AAD scope used to seal the platform-wide
+// embedder API key — a sentinel in place of an instance ID, since this
+// secret belongs to no one instance (see domain.EmbedderSettings).
+const platformSecretScope = "platform"
 
-// Chunking, batching and safety caps for one reindex run. These bound how
-// long and how much memory an operator-triggered reindex can consume; they
-// are deliberately generous for a personal reference library and deliberately
-// not exposed as configuration, to keep the feature's surface small.
+// embedderEgressPolicy always allows private-network egress for embedder
+// calls: the embedder is platform infrastructure the operator points at
+// their own sidecar (a local Ollama instance is the common case), not an
+// upstream API whose egress should be gated by any one instance's own
+// policy. Cloud instance-metadata addresses stay blocked regardless — see
+// upstream.CheckIP.
+var embedderEgressPolicy = upstream.EgressPolicy{AllowPrivateNetworks: true}
+
+// Chunking, batching and timeout caps for one reindex run. These bound how
+// long and how much memory an operator-triggered reindex can consume; a
+// per-source crawl (internal/index/source/*) has its own pagination caps for
+// how much of a library it is willing to walk. These stay here because they
+// govern the chunk/embed/store step every source shares, deliberately
+// generous for a personal library and deliberately not exposed as
+// configuration, to keep the feature's surface small.
 const (
-	reindexPageSize         = 100
-	reindexMaxItems         = 2000
 	reindexMaxChunksPerFile = 200
 	reindexEmbedBatch       = 16
 	reindexTimeout          = 30 * time.Minute
@@ -41,17 +51,49 @@ const (
 	maxSearchLimit       = 20
 	searchCandidatePool  = 40
 	maxChunkPreviewRunes = 700
+	// minRelevanceScore is the cosine-similarity floor a chunk must clear to
+	// be considered a vector match at all. 0.3 is a conservative cut against
+	// most embedding models — comfortably below "related" (typically 0.5+)
+	// but high enough to exclude the near-random matches an unrestricted
+	// top-N search would otherwise happily return. Not exposed as a setting:
+	// a wrong per-model tuning is a rare problem, and a defensible default
+	// beats one more thing to configure.
+	minRelevanceScore = 0.3
 )
 
 // IndexStatus reports the state of an instance's semantic-search index for
 // the web UI.
 type IndexStatus struct {
-	Running        bool
+	Running bool
+	// ItemsProcessed counts every document the crawl examined, whether or
+	// not it produced any indexable text — a rough progress signal, not an
+	// exact count of anything more specific than "documents visited".
 	ItemsProcessed int
-	ChunksIndexed  int
-	LastError      string
-	StartedAt      time.Time
-	FinishedAt     time.Time
+	// ChunksIndexed counts chunks actually (re)written this run — a document
+	// an "Update index" run recognised as unchanged contributes nothing
+	// here, which is the point: it says how much work this run actually did.
+	ChunksIndexed int
+	// DocumentsSkipped counts documents an "Update index" run recognised as
+	// unchanged (same content hash) and left alone.
+	DocumentsSkipped int
+	// DocumentsPruned counts documents that were indexed before but were not
+	// seen this crawl — deleted or renamed upstream — and so were removed.
+	DocumentsPruned int
+	// DocumentsEmptyText counts documents the crawl visited but which had no
+	// extracted text at all — nothing to chunk or embed, so nothing was
+	// written for them. A run with a high count here alongside a low
+	// ChunksIndexed usually means there was nothing to index yet (no Zotero
+	// fulltext extracted, no completed Linkding snapshot, no matching Gitea
+	// file), not that embedding is broken.
+	DocumentsEmptyText int
+	// DocumentsFailed counts documents that errored while embedding or
+	// storing chunks; LastError holds the most recent such error. Unlike
+	// DocumentsEmptyText, a nonzero count here usually means the embedder is
+	// unreachable or misconfigured.
+	DocumentsFailed int
+	LastError       string
+	StartedAt       time.Time
+	FinishedAt      time.Time
 }
 
 // SearchHit is one ranked result from a semantic search.
@@ -66,21 +108,25 @@ type SearchHit struct {
 // IndexerConfig wires the Indexer service.
 type IndexerConfig struct {
 	Repo      store.SearchIndexRepository
+	Platform  store.PlatformRepository
 	Instances *Instances
 	Audit     *Audit
 	Embedder  *index.Embedder
+	Sealer    secrets.Sealer
 	Logger    *slog.Logger
 }
 
 // Indexer builds and serves the semantic-search index over Zotero PDF and
-// snapshot text. It is entirely additive: an instance with no embedder
-// configured and no chunks indexed behaves exactly as it did before this
-// feature existed — Ready reports false and no tool is advertised.
+// snapshot text. It is entirely additive: with no embedder configured and no
+// chunks indexed, an instance behaves exactly as it did before this feature
+// existed — Ready reports false and no tool is advertised.
 type Indexer struct {
 	repo      store.SearchIndexRepository
+	platform  store.PlatformRepository
 	instances *Instances
 	audit     *Audit
 	embedder  *index.Embedder
+	sealer    secrets.Sealer
 	logger    *slog.Logger
 
 	mu     sync.Mutex
@@ -94,14 +140,132 @@ func NewIndexer(cfg IndexerConfig) *Indexer {
 		logger = slog.Default()
 	}
 	return &Indexer{
-		repo: cfg.Repo, instances: cfg.Instances, audit: cfg.Audit, embedder: cfg.Embedder,
+		repo: cfg.Repo, platform: cfg.Platform, instances: cfg.Instances, audit: cfg.Audit,
+		embedder: cfg.Embedder, sealer: cfg.Sealer,
 		logger: logger, status: map[string]*IndexStatus{},
 	}
 }
 
-// Supported reports whether a connector is one this indexer knows how to
-// crawl. The web UI uses this to decide whether to show the feature at all.
-func (s *Indexer) Supported(connectorID string) bool { return connectorID == zoteroConnectorID }
+// EmbedderSettings reports the platform-wide semantic-search embedder
+// configuration and whether an API key is currently set (never its value).
+func (s *Indexer) EmbedderSettings(ctx context.Context) (domain.EmbedderSettings, bool, error) {
+	settings, err := s.platform.GetEmbedderSettings(ctx)
+	if err != nil {
+		return domain.EmbedderSettings{}, false, err
+	}
+	_, apiKeySet, err := s.platform.GetEmbedderAPIKey(ctx)
+	if err != nil {
+		return domain.EmbedderSettings{}, false, err
+	}
+	return settings, apiKeySet, nil
+}
+
+// UpdateEmbedderSettings saves the embedder URL, model and rate limit shared
+// by every instance. Leaving url empty leaves semantic search off entirely
+// for every instance, with no other effect. The first time a URL is set (the
+// previously-saved value was empty), every existing supported, enabled
+// instance that has no index yet is started automatically — an operator who
+// creates instances before configuring the embedder should not also have to
+// remember to go build each one's index by hand afterward.
+func (s *Indexer) UpdateEmbedderSettings(ctx context.Context, actor Actor, url, model string, rateLimitPerMin int) error {
+	if rateLimitPerMin < 0 {
+		rateLimitPerMin = 0
+	}
+	previous, err := s.platform.GetEmbedderSettings(ctx)
+	if err != nil {
+		return err
+	}
+	settings := domain.EmbedderSettings{
+		URL: strings.TrimSpace(url), Model: strings.TrimSpace(model),
+		RateLimitPerMin: rateLimitPerMin, UpdatedAt: time.Now(),
+	}
+	if err := s.platform.SetEmbedderSettings(ctx, settings); err != nil {
+		return err
+	}
+	s.audit.Success(ctx, actor, domain.ActionPlatformSettingsUpdate, "platform", "embedder",
+		map[string]any{"url_set": settings.URL != "", "rate_limit_per_min": settings.RateLimitPerMin})
+
+	if previous.URL == "" && settings.URL != "" {
+		s.autoIndexExisting(ctx, actor)
+	}
+	return nil
+}
+
+// SetEmbedderAPIKey encrypts and stores the embedder sidecar's API key.
+func (s *Indexer) SetEmbedderAPIKey(ctx context.Context, actor Actor, plaintext string) error {
+	if plaintext == "" {
+		return fmt.Errorf("%w: the secret value must not be empty; delete it instead", domain.ErrInvalidInput)
+	}
+	if len(plaintext) > 8192 {
+		return fmt.Errorf("%w: the secret value is too long", domain.ErrInvalidInput)
+	}
+	ciphertext, err := s.sealer.Seal(secrets.SecretAAD(platformSecretScope, index.EmbedderAPIKey), []byte(plaintext))
+	if err != nil {
+		return err
+	}
+	if err := s.platform.SetEmbedderAPIKey(ctx, ciphertext); err != nil {
+		return err
+	}
+	s.audit.Success(ctx, actor, domain.ActionPlatformSettingsUpdate, "platform", "embedder",
+		map[string]any{"secret": "set"})
+	return nil
+}
+
+// DeleteEmbedderAPIKey removes the stored embedder API key.
+func (s *Indexer) DeleteEmbedderAPIKey(ctx context.Context, actor Actor) error {
+	if err := s.platform.DeleteEmbedderAPIKey(ctx); err != nil {
+		return err
+	}
+	s.audit.Success(ctx, actor, domain.ActionPlatformSettingsUpdate, "platform", "embedder",
+		map[string]any{"secret": "deleted"})
+	return nil
+}
+
+// autoIndexExisting starts a background reindex for every supported, enabled
+// instance that has no chunks yet. Failures (a required tool not enabled, a
+// connector mid-reconfiguration) are left for the instance's own status to
+// report, the same as any other Reindex call — this is a convenience
+// trigger, not a guarantee every instance ends up indexed.
+func (s *Indexer) autoIndexExisting(ctx context.Context, actor Actor) {
+	summaries, err := s.instances.List(ctx)
+	if err != nil {
+		s.logger.Warn("auto-index: listing instances failed", slog.String("error", err.Error()))
+		return
+	}
+	for _, sum := range summaries {
+		if !sum.Instance.Enabled || !s.Supported(sum.ConnectorID) {
+			continue
+		}
+		if s.Ready(ctx, sum.Instance.ID) {
+			continue
+		}
+		if err := s.Reindex(ctx, actor, sum.Instance.ID, ReindexUpdate); err != nil {
+			s.logger.Warn("auto-index: starting reindex failed",
+				slog.String("instance_id", sum.Instance.ID), slog.String("error", err.Error()))
+		}
+	}
+}
+
+// embedderAPIKey decrypts the stored embedder API key, if any is set.
+func (s *Indexer) embedderAPIKey(ctx context.Context) (string, error) {
+	ciphertext, ok, err := s.platform.GetEmbedderAPIKey(ctx)
+	if err != nil || !ok {
+		return "", err
+	}
+	plaintext, err := s.sealer.Open(secrets.SecretAAD(platformSecretScope, index.EmbedderAPIKey), ciphertext)
+	if err != nil {
+		return "", fmt.Errorf("could not decrypt the embedder API key; the master key may have changed: %w", err)
+	}
+	return string(plaintext), nil
+}
+
+// Supported reports whether a connector has a registered crawler (see
+// internal/index/source). The web UI uses this to decide whether to show the
+// feature at all.
+func (s *Indexer) Supported(connectorID string) bool {
+	_, ok := source.Get(connectorID)
+	return ok
+}
 
 // Ready reports whether an instance has a usable index, which is what gates
 // advertising the semantic search tool to MCP clients: an empty or
@@ -127,16 +291,40 @@ func (s *Indexer) Status(ctx context.Context, instanceID string) (IndexStatus, i
 	return *st, count, nil
 }
 
-// Reindex clears and rebuilds an instance's index from scratch, in the
-// background: a real library's worth of PDFs takes many embedding calls, far
-// longer than an operator should have to wait on an HTTP response for.
-func (s *Indexer) Reindex(ctx context.Context, actor Actor, instanceID string) error {
+// ReindexMode selects how Reindex treats an instance's existing index.
+type ReindexMode int
+
+const (
+	// ReindexUpdate is the default, incremental mode: a document whose
+	// content hash has not changed since the last run is left untouched —
+	// not re-chunked, not re-embedded — and a document that existed before
+	// but was not seen this crawl (deleted or renamed upstream) is pruned,
+	// as long as the crawl was not truncated. It refuses to run at all if
+	// the instance's embedder model has changed since the index was built,
+	// since mixing vectors from two models degrades silently to noise
+	// rather than erroring.
+	ReindexUpdate ReindexMode = iota
+	// ReindexRebuild clears the instance's index first and rebuilds it from
+	// scratch, embedding every document regardless of whether its content
+	// has changed. It is the only mode that may change the embedder model
+	// an index is built with.
+	ReindexRebuild
+)
+
+// docKey identifies one document within an instance's index, for diffing a
+// fresh crawl against what is already stored.
+type docKey struct{ itemKey, attachmentKey string }
+
+// Reindex builds or updates an instance's index in the background: a real
+// library's worth of documents takes many embedding calls, far longer than
+// an operator should have to wait on an HTTP response for.
+func (s *Indexer) Reindex(ctx context.Context, actor Actor, instanceID string, mode ReindexMode) error {
 	resolved, err := s.instances.ResolveByID(ctx, instanceID)
 	if err != nil {
 		return err
 	}
 	if !s.Supported(resolved.ConnectorRec.ID) {
-		return fmt.Errorf("%w: semantic search indexing currently supports only the Zotero (Local API) connector", domain.ErrInvalidInput)
+		return fmt.Errorf("%w: semantic search indexing is not available for this connector", domain.ErrInvalidInput)
 	}
 
 	s.mu.Lock()
@@ -147,12 +335,16 @@ func (s *Indexer) Reindex(ctx context.Context, actor Actor, instanceID string) e
 	s.status[instanceID] = &IndexStatus{Running: true, StartedAt: time.Now()}
 	s.mu.Unlock()
 
-	s.audit.Success(ctx, actor, domain.ActionIndexReindex, "instance", instanceID, map[string]any{"action": "started"})
-	go s.runReindex(instanceID)
+	action := "update"
+	if mode == ReindexRebuild {
+		action = "rebuild"
+	}
+	s.audit.Success(ctx, actor, domain.ActionIndexReindex, "instance", instanceID, map[string]any{"action": "started", "mode": action})
+	go s.runReindex(instanceID, mode)
 	return nil
 }
 
-func (s *Indexer) runReindex(instanceID string) {
+func (s *Indexer) runReindex(instanceID string, mode ReindexMode) {
 	ctx, cancel := context.WithTimeout(context.Background(), reindexTimeout)
 	defer cancel()
 	defer s.finish(instanceID)
@@ -167,115 +359,159 @@ func (s *Indexer) runReindex(instanceID string) {
 		s.fail(instanceID, err)
 		return
 	}
-	if target.Vars[index.EmbedderURL] == "" {
-		s.fail(instanceID, fmt.Errorf("set the %q variable on this instance before indexing", index.EmbedderURL))
+	settings, err := s.platform.GetEmbedderSettings(ctx)
+	if err != nil {
+		s.fail(instanceID, err)
 		return
 	}
-
-	topItems, ok := s.enabledTool(resolved, "zotero_list_top_items")
-	if !ok {
-		s.fail(instanceID, fmt.Errorf("this instance needs zotero_list_top_items enabled to index"))
+	if settings.URL == "" {
+		s.fail(instanceID, fmt.Errorf("set the embedder URL under Settings → Semantic search before indexing"))
 		return
 	}
-	children, ok := s.enabledTool(resolved, "zotero_get_item_children")
-	if !ok {
-		s.fail(instanceID, fmt.Errorf("this instance needs zotero_get_item_children enabled to index"))
-		return
-	}
-	fulltext, ok := s.enabledTool(resolved, "zotero_get_item_fulltext")
-	if !ok {
-		s.fail(instanceID, fmt.Errorf("this instance needs zotero_get_item_fulltext enabled to index"))
-		return
-	}
-
-	if err := s.repo.ClearInstance(ctx, instanceID); err != nil {
+	apiKey, err := s.embedderAPIKey(ctx)
+	if err != nil {
 		s.fail(instanceID, err)
 		return
 	}
 
-	executor := s.instances.Executor()
-	start := 0
-	for processed := 0; processed < reindexMaxItems; {
-		result, err := executor.Execute(ctx, target, resolved.Connector, topItems, map[string]any{"limit": reindexPageSize, "start": start})
+	crawler, ok := source.Get(resolved.ConnectorRec.ID)
+	if !ok {
+		s.fail(instanceID, fmt.Errorf("semantic search indexing is not available for this connector"))
+		return
+	}
+	for _, toolName := range crawler.RequiredTools() {
+		if _, declared := resolved.Connector.Tool(toolName); !declared || !resolved.EnabledTools[toolName] {
+			s.fail(instanceID, fmt.Errorf("this instance needs %q enabled to index", toolName))
+			return
+		}
+	}
+
+	effectiveModel := settings.Model
+	if effectiveModel == "" {
+		effectiveModel = index.DefaultEmbedder
+	}
+
+	existing := map[docKey]domain.IndexDocument{}
+	if mode == ReindexRebuild {
+		if err := s.repo.ClearInstance(ctx, instanceID); err != nil {
+			s.fail(instanceID, err)
+			return
+		}
+	} else {
+		meta, ok, err := s.repo.GetMeta(ctx, instanceID)
 		if err != nil {
 			s.fail(instanceID, err)
 			return
 		}
-		items, _ := result.Data.([]any)
-		if len(items) == 0 {
-			break
+		if ok && meta.EmbedderModel != effectiveModel {
+			s.fail(instanceID, fmt.Errorf("%w: the embedder model changed from %q to %q since this index was built; use Rebuild from scratch instead of Update",
+				domain.ErrInvalidInput, meta.EmbedderModel, effectiveModel))
+			return
 		}
-		for _, raw := range items {
-			item, _ := raw.(map[string]any)
-			key, _ := item["key"].(string)
-			if key == "" {
+		docs, err := s.repo.ListDocuments(ctx, instanceID)
+		if err != nil {
+			s.fail(instanceID, err)
+			return
+		}
+		for _, d := range docs {
+			existing[docKey{d.ItemKey, d.AttachmentKey}] = d
+		}
+	}
+
+	rt := source.Runtime{
+		Executor: s.instances.Executor(), Target: target,
+		Connector: resolved.Connector, EnabledTools: resolved.EnabledTools,
+	}
+	seen := map[docKey]bool{}
+	dimension := 0
+	truncated, err := crawler.Crawl(ctx, rt, func(ctx context.Context, doc source.Document, text string) error {
+		key := docKey{doc.ItemKey, doc.AttachmentKey}
+		seen[key] = true
+		s.addItem(instanceID)
+		if strings.TrimSpace(text) == "" {
+			s.addEmptyText(instanceID)
+			return nil
+		}
+
+		hash := hashText(text)
+		if prior, ok := existing[key]; ok {
+			if prior.ContentHash == hash {
+				s.addSkipped(instanceID)
+				return nil
+			}
+			if err := s.repo.DeleteDocumentChunks(ctx, instanceID, doc.ItemKey, doc.AttachmentKey); err != nil {
+				s.addFailed(instanceID, fmt.Errorf("clearing %q's old chunks: %w", doc.AttachmentKey, err))
+				return nil
+			}
+		}
+
+		chunkCount, chunkDim, ierr := s.indexDocument(ctx, instanceID, settings, apiKey, doc, text)
+		if ierr != nil {
+			s.addFailed(instanceID, ierr)
+			return nil
+		}
+		if chunkCount == 0 {
+			return nil
+		}
+		dimension = chunkDim
+		if err := s.repo.UpsertDocument(ctx, domain.IndexDocument{
+			InstanceID: instanceID, ItemKey: doc.ItemKey, AttachmentKey: doc.AttachmentKey,
+			ContentHash: hash, ChunkCount: chunkCount, UpdatedAt: time.Now(),
+		}); err != nil {
+			s.logger.Warn("index: recording document bookkeeping failed",
+				slog.String("attachment", doc.AttachmentKey), slog.String("error", err.Error()))
+		}
+		return nil
+	})
+	if err != nil {
+		s.fail(instanceID, err)
+		return
+	}
+
+	// Pruning trusts that the crawl saw everything: a truncated run's
+	// "unseen" documents may simply be ones it never reached, not ones
+	// deleted upstream, so treating them as deletions would be data loss.
+	if mode == ReindexUpdate && !truncated {
+		for key, doc := range existing {
+			if seen[key] {
 				continue
 			}
-			s.indexItem(ctx, executor, target, resolved, children, fulltext, instanceID, key)
-			processed++
-			s.addItem(instanceID)
+			if err := s.repo.DeleteDocumentChunks(ctx, instanceID, doc.ItemKey, doc.AttachmentKey); err != nil {
+				s.logger.Warn("index: pruning a document's chunks failed",
+					slog.String("attachment", doc.AttachmentKey), slog.String("error", err.Error()))
+				continue
+			}
+			if err := s.repo.DeleteDocument(ctx, instanceID, doc.ItemKey, doc.AttachmentKey); err != nil {
+				s.logger.Warn("index: pruning a document's bookkeeping failed",
+					slog.String("attachment", doc.AttachmentKey), slog.String("error", err.Error()))
+				continue
+			}
+			s.addPruned(instanceID)
 		}
-		if len(items) < reindexPageSize {
-			break
+	}
+
+	if dimension > 0 {
+		if err := s.repo.SetMeta(ctx, domain.IndexMeta{
+			InstanceID: instanceID, EmbedderModel: effectiveModel, EmbedderDimension: dimension, UpdatedAt: time.Now(),
+		}); err != nil {
+			s.logger.Warn("index: recording embedder meta failed", slog.String("error", err.Error()))
 		}
-		start += reindexPageSize
 	}
 }
 
-// enabledTool looks up a tool the connector declares and requires it to be
-// enabled on this instance: indexing runs unattended, so it must respect the
-// same on/off switch an operator uses to turn a tool off for MCP clients,
-// rather than reaching upstream behind their back.
-func (s *Indexer) enabledTool(r *Resolved, name string) (*connector.CompiledTool, bool) {
-	tool, ok := r.Connector.Tool(name)
-	if !ok || !r.EnabledTools[name] {
-		return nil, false
-	}
-	return tool, true
+func hashText(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
 }
 
-func (s *Indexer) indexItem(ctx context.Context, executor *engine.Executor, target *engine.Target, resolved *Resolved, childrenTool, fulltextTool *connector.CompiledTool, instanceID, itemKey string) {
-	result, err := executor.Execute(ctx, target, resolved.Connector, childrenTool, map[string]any{"itemKey": itemKey, "limit": 50})
-	if err != nil {
-		s.logger.Debug("index: listing children failed", slog.String("item", itemKey), slog.String("error", err.Error()))
-		return
-	}
-	children, _ := result.Data.([]any)
-	for _, raw := range children {
-		child, _ := raw.(map[string]any)
-		data, _ := child["data"].(map[string]any)
-		if data == nil {
-			continue
-		}
-		if itemType, _ := data["itemType"].(string); itemType != "attachment" {
-			continue
-		}
-		contentType, _ := data["contentType"].(string)
-		if contentType != "application/pdf" && contentType != "text/html" {
-			continue
-		}
-		attKey, _ := child["key"].(string)
-		if attKey == "" {
-			continue
-		}
-		s.indexAttachment(ctx, executor, target, resolved, fulltextTool, instanceID, itemKey, attKey)
-	}
-}
-
-func (s *Indexer) indexAttachment(ctx context.Context, executor *engine.Executor, target *engine.Target, resolved *Resolved, fulltextTool *connector.CompiledTool, instanceID, itemKey, attachmentKey string) {
-	result, err := executor.Execute(ctx, target, resolved.Connector, fulltextTool, map[string]any{"itemKey": attachmentKey})
-	if err != nil {
-		// Most commonly a 404: Zotero has not extracted text for this
-		// attachment yet. Not worth aborting or even logging per-attachment.
-		return
-	}
-	data, _ := result.Data.(map[string]any)
-	content, _ := data["content"].(string)
-	if strings.TrimSpace(content) == "" {
-		return
-	}
-
-	spans := index.Chunk(content)
+// indexDocument chunks, embeds and stores one document's text, returning how
+// many chunks it produced and their vector dimension. This is the part
+// every source shares — chunking and embedding know nothing about where the
+// text came from — unlike the crawl itself, which is entirely
+// source-specific (see internal/index/source). A non-nil error means the
+// caller should count this document as failed rather than silently empty.
+func (s *Indexer) indexDocument(ctx context.Context, instanceID string, settings domain.EmbedderSettings, apiKey string, doc source.Document, text string) (chunkCount, dimension int, err error) {
+	spans := chunkFor(doc, text)
 	if len(spans) > reindexMaxChunksPerFile {
 		spans = spans[:reindexMaxChunksPerFile]
 	}
@@ -287,28 +523,38 @@ func (s *Indexer) indexAttachment(ctx context.Context, executor *engine.Executor
 	var chunks []domain.IndexChunk
 	for i := 0; i < len(texts); i += reindexEmbedBatch {
 		end := min(i+reindexEmbedBatch, len(texts))
-		vectors, err := s.embedder.Embed(ctx, target.Vars[index.EmbedderURL], target.Vars[index.EmbedderModel],
-			target.Secrets[index.EmbedderAPIKey], target.Policy, texts[i:end])
-		if err != nil {
-			s.logger.Warn("index: embedding failed", slog.String("attachment", attachmentKey), slog.String("error", err.Error()))
-			return
+		vectors, embedErr := s.embedder.Embed(ctx, settings.URL, settings.Model, apiKey, settings.RateLimitPerMin,
+			embedderEgressPolicy, texts[i:end])
+		if embedErr != nil {
+			return 0, 0, fmt.Errorf("embedding %q: %w", doc.AttachmentKey, embedErr)
 		}
 		for j, v := range vectors {
 			sp := spans[i+j]
 			chunks = append(chunks, domain.IndexChunk{
-				InstanceID: instanceID, ItemKey: itemKey, AttachmentKey: attachmentKey,
+				InstanceID: instanceID, ItemKey: doc.ItemKey, AttachmentKey: doc.AttachmentKey,
 				ChunkIndex: sp.Index, CharStart: sp.Start, CharEnd: sp.End, Text: sp.Text, Embedding: v,
 			})
 		}
 	}
 	if len(chunks) == 0 {
-		return
+		return 0, 0, nil
 	}
 	if err := s.repo.InsertChunks(ctx, instanceID, chunks); err != nil {
-		s.logger.Warn("index: storing chunks failed", slog.String("attachment", attachmentKey), slog.String("error", err.Error()))
-		return
+		return 0, 0, fmt.Errorf("storing chunks for %q: %w", doc.AttachmentKey, err)
 	}
 	s.addChunks(instanceID, len(chunks))
+	return len(chunks), len(chunks[0].Embedding), nil
+}
+
+// chunkFor picks the splitter a document's crawler asked for. A source sets
+// HeadingDialect on a per-document basis (a Gitea repository can mix
+// markdown and typst files, say), never globally per connector, so the
+// dispatch has to happen here rather than once per crawl.
+func chunkFor(doc source.Document, text string) []index.Span {
+	if doc.HeadingDialect != "" {
+		return index.ChunkHeading(text, doc.HeadingDialect)
+	}
+	return index.Chunk(text)
 }
 
 func (s *Indexer) addItem(instanceID string) {
@@ -324,6 +570,45 @@ func (s *Indexer) addChunks(instanceID string, n int) {
 	defer s.mu.Unlock()
 	if st := s.status[instanceID]; st != nil {
 		st.ChunksIndexed += n
+	}
+}
+
+func (s *Indexer) addSkipped(instanceID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if st := s.status[instanceID]; st != nil {
+		st.DocumentsSkipped++
+	}
+}
+
+func (s *Indexer) addPruned(instanceID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if st := s.status[instanceID]; st != nil {
+		st.DocumentsPruned++
+	}
+}
+
+func (s *Indexer) addEmptyText(instanceID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if st := s.status[instanceID]; st != nil {
+		st.DocumentsEmptyText++
+	}
+}
+
+// addFailed records a per-document failure: it still logs (an operator
+// tailing the logs sees every failure, not just the last), but unlike the
+// old warn-only handling it also counts the failure and surfaces its message
+// as LastError, so a broken embedder is visible on the instance page instead
+// of only in ChunksIndexed silently staying at zero.
+func (s *Indexer) addFailed(instanceID string, err error) {
+	s.logger.Warn("index: document failed", slog.String("error", err.Error()))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if st := s.status[instanceID]; st != nil {
+		st.DocumentsFailed++
+		st.LastError = err.Error()
 	}
 }
 
@@ -359,20 +644,23 @@ func (s *Indexer) Search(ctx context.Context, instanceID, query string, limit in
 		limit = defaultSearchLimit
 	}
 
-	resolved, err := s.instances.ResolveByID(ctx, instanceID)
+	if _, err := s.instances.ResolveByID(ctx, instanceID); err != nil {
+		return nil, err
+	}
+	settings, err := s.platform.GetEmbedderSettings(ctx)
 	if err != nil {
 		return nil, err
 	}
-	target, err := s.instances.Target(resolved)
+	if settings.URL == "" {
+		return nil, fmt.Errorf("semantic search is not configured on this deployment")
+	}
+	apiKey, err := s.embedderAPIKey(ctx)
 	if err != nil {
 		return nil, err
-	}
-	if target.Vars[index.EmbedderURL] == "" {
-		return nil, fmt.Errorf("semantic search is not configured for this instance")
 	}
 
-	vectors, err := s.embedder.Embed(ctx, target.Vars[index.EmbedderURL], target.Vars[index.EmbedderModel],
-		target.Secrets[index.EmbedderAPIKey], target.Policy, []string{query})
+	vectors, err := s.embedder.Embed(ctx, settings.URL, settings.Model, apiKey, settings.RateLimitPerMin,
+		embedderEgressPolicy, []string{query})
 	if err != nil {
 		return nil, err
 	}
@@ -397,6 +685,14 @@ func (s *Indexer) Search(ctx context.Context, instanceID, query string, limit in
 		byID[c.ID] = c
 		sc := index.Cosine(queryVec, c.Embedding)
 		scoreByID[c.ID] = sc
+		// Below minRelevanceScore a "match" is closer to noise than signal —
+		// dropping it here means it never enters fusion at all, rather than
+		// ranking a barely-related chunk over having no result. A keyword
+		// (BM25) match is unaffected: an exact term hit is relevant on its
+		// own terms regardless of embedding similarity.
+		if sc < minRelevanceScore {
+			continue
+		}
 		ranked = append(ranked, scored{c.ID, sc})
 	}
 	sort.Slice(ranked, func(i, j int) bool { return ranked[i].score > ranked[j].score })

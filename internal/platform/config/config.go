@@ -152,9 +152,16 @@ func (c Config) validate() error {
 	return nil
 }
 
+// env reads a string setting, trimming surrounding whitespace. No setting here
+// has significant leading or trailing space, and trimming turns two silent
+// failure modes into working configuration: a trailing newline picked up from
+// MCPAW_MASTER_KEY="$(cat key)", and a whitespace-only value that would
+// otherwise pass an emptiness check and fail later at bind time.
 func env(key, def string) string {
-	if v, ok := os.LookupEnv(key); ok && v != "" {
-		return v
+	if v, ok := os.LookupEnv(key); ok {
+		if v = strings.TrimSpace(v); v != "" {
+			return v
+		}
 	}
 	return def
 }

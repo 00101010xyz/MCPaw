@@ -113,9 +113,13 @@ type Instance struct {
 
 	Enabled bool
 
-	// AllowPrivateNetwork is the explicit, audited opt-in that permits egress
-	// to loopback and RFC1918-style addresses. It defaults to false and must be
-	// enabled deliberately — the Zotero local API needs it.
+	// AllowPrivateNetwork permits egress to loopback and RFC1918-style
+	// addresses. Cloud instance-metadata addresses (169.254.169.254 and
+	// friends) stay blocked regardless of this setting — most of the
+	// connectors this platform ships with talk to something running on the
+	// operator's own machine or LAN, so the creation form pre-enables this,
+	// but it stays a real, editable field rather than an assumption baked in
+	// silently.
 	AllowPrivateNetwork bool
 
 	// HostHeaderOverride, when set, replaces the outgoing HTTP Host header on
@@ -159,11 +163,11 @@ type ToolBinding struct {
 	Enabled    bool
 }
 
-// IndexChunk is one embedded, searchable slice of text extracted from an
-// attachment (a PDF or snapshot) belonging to a Zotero item, for the
-// semantic-search index. ItemKey identifies the parent library item;
-// AttachmentKey identifies the specific attachment the text came from, since
-// an item can carry more than one.
+// IndexChunk is one embedded, searchable slice of text extracted from a
+// document (e.g. a Zotero attachment or a Gitea file) for the semantic-search
+// index. ItemKey identifies the document's logical parent; AttachmentKey
+// identifies the specific document the text came from — for a source with no
+// such grouping, the two are equal.
 type IndexChunk struct {
 	ID            int64
 	InstanceID    string
@@ -175,9 +179,52 @@ type IndexChunk struct {
 	Text          string
 	// Embedding is the chunk's vector, in the dimensionality the configured
 	// embedder produced it in. Chunks from a different model or dimension
-	// count must never be compared against one another, which is why a
-	// reindex clears the whole instance rather than merging.
+	// count must never be compared against one another — see IndexMeta.
 	Embedding []float32
+}
+
+// IndexDocument is the incremental-reindex bookkeeping row for one document:
+// what its content hashed to and how many chunks it produced, the last time
+// it was indexed. An "Update index" run compares a freshly fetched
+// document's hash against this to decide whether re-chunking and
+// re-embedding it is necessary at all.
+type IndexDocument struct {
+	InstanceID    string
+	ItemKey       string
+	AttachmentKey string
+	ContentHash   string
+	ChunkCount    int
+	UpdatedAt     time.Time
+}
+
+// EmbedderSettings configures the semantic-search embedding sidecar shared by
+// every instance capable of indexing (see internal/index). It is a single,
+// platform-wide row rather than a per-instance or per-connector setting:
+// which model turns a chunk of text into a vector has nothing to do with
+// which upstream API the text came from, and an operator running more than
+// one indexable instance wants to point them all at the same sidecar without
+// repeating the configuration. Leaving URL empty leaves semantic search off
+// entirely for every instance, with no other effect. The API key (if the
+// sidecar needs one) is stored separately, encrypted the same way an
+// instance secret is.
+type EmbedderSettings struct {
+	URL             string
+	Model           string
+	RateLimitPerMin int
+	UpdatedAt       time.Time
+}
+
+// IndexMeta records which embedder model (and vector dimension) built an
+// instance's current index. An incremental "Update index" run must refuse to
+// proceed if the instance is now configured with a different model or
+// dimension than this — mixing vectors from two models degrades silently to
+// noise rather than erroring, so that case requires an explicit
+// "Rebuild from scratch" instead.
+type IndexMeta struct {
+	InstanceID        string
+	EmbedderModel     string
+	EmbedderDimension int
+	UpdatedAt         time.Time
 }
 
 // Token is a bearer credential presented by an MCP client. Only the SHA-256
@@ -230,21 +277,22 @@ type AuditEvent struct {
 // Audit action names. Kept as constants so the set of auditable operations is
 // discoverable and greppable rather than scattered as string literals.
 const (
-	ActionLogin              = "auth.login"
-	ActionLoginFailed        = "auth.login_failed"
-	ActionLogout             = "auth.logout"
-	ActionUserCreate         = "user.create"
-	ActionUserUpdate         = "user.update"
-	ActionInstanceCreate     = "instance.create"
-	ActionInstanceUpdate     = "instance.update"
-	ActionInstanceDelete     = "instance.delete"
-	ActionInstanceSecretSet  = "instance.secret_set"
-	ActionInstanceEgressOpen = "instance.egress_private_enabled"
-	ActionInstanceTest       = "instance.test"
-	ActionConnectorImport    = "connector.import"
-	ActionConnectorDelete    = "connector.delete"
-	ActionTokenCreate        = "token.create"
-	ActionTokenRevoke        = "token.revoke"
-	ActionToolCall           = "tool.call"
-	ActionIndexReindex       = "instance.index_reindex"
+	ActionLogin                  = "auth.login"
+	ActionLoginFailed            = "auth.login_failed"
+	ActionLogout                 = "auth.logout"
+	ActionUserCreate             = "user.create"
+	ActionUserUpdate             = "user.update"
+	ActionInstanceCreate         = "instance.create"
+	ActionInstanceUpdate         = "instance.update"
+	ActionInstanceDelete         = "instance.delete"
+	ActionInstanceSecretSet      = "instance.secret_set"
+	ActionInstanceEgressOpen     = "instance.egress_private_enabled"
+	ActionInstanceTest           = "instance.test"
+	ActionConnectorImport        = "connector.import"
+	ActionConnectorDelete        = "connector.delete"
+	ActionTokenCreate            = "token.create"
+	ActionTokenRevoke            = "token.revoke"
+	ActionToolCall               = "tool.call"
+	ActionIndexReindex           = "instance.index_reindex"
+	ActionPlatformSettingsUpdate = "platform.settings_update"
 )

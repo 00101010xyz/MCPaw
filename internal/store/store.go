@@ -22,6 +22,7 @@ type Repositories interface {
 	Tokens() TokenRepository
 	Audit() AuditRepository
 	SearchIndex() SearchIndexRepository
+	Platform() PlatformRepository
 
 	// Ping verifies the datastore is reachable; used by the readiness probe.
 	Ping(ctx context.Context) error
@@ -105,19 +106,23 @@ type AuditRepository interface {
 	Prune(ctx context.Context, olderThan time.Time) (int64, error)
 }
 
-// SearchIndexRepository persists the semantic-search index. An instance's
-// embedder configuration is not stored here: it travels as an ordinary
-// connector variable/secret, so it reuses the existing sealing, validation
-// and web UI rather than a parallel configuration path.
+// SearchIndexRepository persists the semantic-search index: chunks and their
+// embeddings, plus the per-document and per-instance bookkeeping an
+// incremental "Update index" run needs to know what changed.
 type SearchIndexRepository interface {
-	// ClearInstance removes every chunk belonging to an instance. A reindex
-	// always starts here so stale chunks from a prior model or a deleted
-	// item can never linger and be served as if current.
+	// ClearInstance removes every chunk, document record and meta row
+	// belonging to an instance. A "Rebuild from scratch" run always starts
+	// here so stale chunks from a prior model, or a deleted document, can
+	// never linger and be served as if current.
 	ClearInstance(ctx context.Context, instanceID string) error
 	// InsertChunks appends chunks, incrementally during a reindex, so a
 	// crash or timeout partway through leaves a partial-but-usable index
 	// rather than nothing.
 	InsertChunks(ctx context.Context, instanceID string, chunks []domain.IndexChunk) error
+	// DeleteDocumentChunks removes every chunk (and its FTS row) belonging to
+	// one document, so a changed document's stale chunks can be replaced
+	// without touching any other document's.
+	DeleteDocumentChunks(ctx context.Context, instanceID, itemKey, attachmentKey string) error
 	CountChunks(ctx context.Context, instanceID string) (int, error)
 	// LoadAll returns every chunk (with its embedding) for an instance, for
 	// brute-force vector comparison. Sized for a personal reference library,
@@ -125,4 +130,37 @@ type SearchIndexRepository interface {
 	LoadAll(ctx context.Context, instanceID string) ([]domain.IndexChunk, error)
 	// BM25Search returns chunk IDs ranked by full-text relevance, best first.
 	BM25Search(ctx context.Context, instanceID, query string, limit int) ([]int64, error)
+
+	// ListDocuments returns the incremental-reindex bookkeeping row for every
+	// document currently indexed for an instance, keyed by (item key,
+	// attachment key) so an "Update index" run can diff a fresh crawl against
+	// what is already stored.
+	ListDocuments(ctx context.Context, instanceID string) ([]domain.IndexDocument, error)
+	// UpsertDocument records (or updates) one document's content hash and
+	// chunk count after it has been (re)indexed.
+	UpsertDocument(ctx context.Context, doc domain.IndexDocument) error
+	// DeleteDocument removes one document's bookkeeping row — paired with
+	// DeleteDocumentChunks when pruning a document no longer seen upstream.
+	DeleteDocument(ctx context.Context, instanceID, itemKey, attachmentKey string) error
+
+	// GetMeta returns which embedder model and dimension built an instance's
+	// current index, or ok=false if the instance has never been indexed.
+	GetMeta(ctx context.Context, instanceID string) (meta domain.IndexMeta, ok bool, err error)
+	// SetMeta records which embedder model and dimension the index is now
+	// built with.
+	SetMeta(ctx context.Context, meta domain.IndexMeta) error
+}
+
+// PlatformRepository persists platform-wide settings that apply to every
+// instance rather than to one of them — currently just the shared semantic
+// search embedder configuration (see domain.EmbedderSettings). Its API key,
+// when the embedder needs one, is stored separately as ciphertext, the same
+// way an instance secret is.
+type PlatformRepository interface {
+	GetEmbedderSettings(ctx context.Context) (domain.EmbedderSettings, error)
+	SetEmbedderSettings(ctx context.Context, s domain.EmbedderSettings) error
+
+	GetEmbedderAPIKey(ctx context.Context) (ciphertext []byte, ok bool, err error)
+	SetEmbedderAPIKey(ctx context.Context, ciphertext []byte) error
+	DeleteEmbedderAPIKey(ctx context.Context) error
 }

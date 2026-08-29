@@ -65,6 +65,14 @@ type BaseURLSpec struct {
 	// Locked prevents an operator from pointing the instance at a different
 	// origin, for connectors whose semantics only make sense against one host.
 	Locked bool `yaml:"locked,omitempty" json:"locked,omitempty"`
+
+	// SuggestHostHeaderOverride documents that this API validates the request's
+	// Host header (a DNS-rebinding defense) and so needs the override
+	// pre-filled when the default base URL points at host.docker.internal.
+	// Most host.docker.internal-facing connectors do not do this — it is not
+	// implied by RequiresPrivateNetwork — so it is a separate, explicit flag
+	// rather than guessed from the hostname alone.
+	SuggestHostHeaderOverride bool `yaml:"suggestHostHeaderOverride,omitempty" json:"suggestHostHeaderOverride,omitempty"`
 }
 
 // Authentication schemes a connector may declare.
@@ -103,6 +111,11 @@ type Variable struct {
 	Pattern     string   `yaml:"pattern,omitempty"     json:"pattern,omitempty"`
 	Enum        []string `yaml:"enum,omitempty"        json:"enum,omitempty"`
 	Example     string   `yaml:"example,omitempty"     json:"example,omitempty"`
+	// Advanced hides this variable behind the instance form's Advanced
+	// section rather than the main flow — for a variable most operators
+	// should leave alone, such as an override that narrows an otherwise
+	// automatic default.
+	Advanced bool `yaml:"advanced,omitempty" json:"advanced,omitempty"`
 }
 
 // Secret is an operator-supplied credential, stored encrypted and never

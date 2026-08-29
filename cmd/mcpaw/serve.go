@@ -18,6 +18,9 @@ import (
 	"github.com/00101010xyz/mcpaw/internal/httpapi"
 	"github.com/00101010xyz/mcpaw/internal/httpx"
 	"github.com/00101010xyz/mcpaw/internal/index"
+	_ "github.com/00101010xyz/mcpaw/internal/index/source/gitea"    // registers the Gitea crawler
+	_ "github.com/00101010xyz/mcpaw/internal/index/source/linkding" // registers the Linkding crawler
+	_ "github.com/00101010xyz/mcpaw/internal/index/source/zotero"   // registers the Zotero crawler
 	"github.com/00101010xyz/mcpaw/internal/mcp"
 	"github.com/00101010xyz/mcpaw/internal/platform/config"
 	"github.com/00101010xyz/mcpaw/internal/platform/logging"
@@ -119,8 +122,8 @@ func runServe(args []string) error {
 		Repo: repos.Instances(), Connectors: connectors, Sealer: sealer, Executor: executor, Audit: audit,
 	})
 	indexer := service.NewIndexer(service.IndexerConfig{
-		Repo: repos.SearchIndex(), Instances: instances, Audit: audit,
-		Embedder: &index.Embedder{Client: executor.Client()}, Logger: logger,
+		Repo: repos.SearchIndex(), Platform: repos.Platform(), Instances: instances, Audit: audit,
+		Embedder: &index.Embedder{Client: executor.Client(), Limiter: limiter}, Sealer: sealer, Logger: logger,
 	})
 	mcpBackend := service.NewMCPBackend(instances, indexer, audit, version, logger)
 

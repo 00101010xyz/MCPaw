@@ -3,6 +3,7 @@ package sqlitestore
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/00101010xyz/mcpaw/internal/domain"
 )
@@ -92,6 +93,208 @@ func TestSearchIndexInsertLoadAndClear(t *testing.T) {
 	}
 	if otherCount != 1 {
 		t.Fatalf("ClearInstance affected another instance: count = %d, want 1", otherCount)
+	}
+}
+
+func TestSearchIndexDeleteDocumentChunks(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedConnector(t, s)
+	inst := seedInstance(t, s, "zotero")
+
+	if err := s.SearchIndex().InsertChunks(ctx, inst.ID, []domain.IndexChunk{
+		{ItemKey: "ITEM0001", AttachmentKey: "ATT00001", ChunkIndex: 0, Text: "keep this out", Embedding: []float32{1}},
+		{ItemKey: "ITEM0001", AttachmentKey: "ATT00001", ChunkIndex: 1, Text: "also keep this out", Embedding: []float32{1}},
+		{ItemKey: "ITEM0002", AttachmentKey: "ATT00002", ChunkIndex: 0, Text: "keep this in", Embedding: []float32{1}},
+	}); err != nil {
+		t.Fatalf("InsertChunks: %v", err)
+	}
+
+	if err := s.SearchIndex().DeleteDocumentChunks(ctx, inst.ID, "ITEM0001", "ATT00001"); err != nil {
+		t.Fatalf("DeleteDocumentChunks: %v", err)
+	}
+
+	loaded, err := s.SearchIndex().LoadAll(ctx, inst.ID)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if len(loaded) != 1 || loaded[0].AttachmentKey != "ATT00002" {
+		t.Fatalf("LoadAll after delete = %+v, want only ATT00002's chunk", loaded)
+	}
+
+	// The FTS side table must not retain a row for the deleted chunks either
+	// — a stale FTS row would keep matching keyword searches for text that
+	// no longer has a corresponding chunk.
+	hits, err := s.SearchIndex().BM25Search(ctx, inst.ID, `"keep this out"`, 10)
+	if err != nil {
+		t.Fatalf("BM25Search: %v", err)
+	}
+	if len(hits) != 0 {
+		t.Errorf("BM25Search still finds the deleted document's text: %v", hits)
+	}
+}
+
+func TestSearchIndexDocumentBookkeeping(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedConnector(t, s)
+	inst := seedInstance(t, s, "zotero")
+	now := time.Now().UTC().Truncate(time.Second)
+
+	doc := domain.IndexDocument{
+		InstanceID: inst.ID, ItemKey: "ITEM0001", AttachmentKey: "ATT00001",
+		ContentHash: "hash-v1", ChunkCount: 3, UpdatedAt: now,
+	}
+	if err := s.SearchIndex().UpsertDocument(ctx, doc); err != nil {
+		t.Fatalf("UpsertDocument (insert): %v", err)
+	}
+
+	docs, err := s.SearchIndex().ListDocuments(ctx, inst.ID)
+	if err != nil {
+		t.Fatalf("ListDocuments: %v", err)
+	}
+	if len(docs) != 1 || docs[0].ContentHash != "hash-v1" || docs[0].ChunkCount != 3 {
+		t.Fatalf("ListDocuments = %+v, want one row with hash-v1/3", docs)
+	}
+
+	// Upserting the same (instance, item, attachment) again must replace the
+	// row, not add a second one — that is what lets an incremental run
+	// re-record a changed document's new hash in place.
+	doc.ContentHash = "hash-v2"
+	doc.ChunkCount = 5
+	if err := s.SearchIndex().UpsertDocument(ctx, doc); err != nil {
+		t.Fatalf("UpsertDocument (update): %v", err)
+	}
+	docs, err = s.SearchIndex().ListDocuments(ctx, inst.ID)
+	if err != nil {
+		t.Fatalf("ListDocuments after update: %v", err)
+	}
+	if len(docs) != 1 || docs[0].ContentHash != "hash-v2" || docs[0].ChunkCount != 5 {
+		t.Fatalf("ListDocuments after update = %+v, want one row with hash-v2/5", docs)
+	}
+
+	if err := s.SearchIndex().DeleteDocument(ctx, inst.ID, "ITEM0001", "ATT00001"); err != nil {
+		t.Fatalf("DeleteDocument: %v", err)
+	}
+	docs, err = s.SearchIndex().ListDocuments(ctx, inst.ID)
+	if err != nil {
+		t.Fatalf("ListDocuments after delete: %v", err)
+	}
+	if len(docs) != 0 {
+		t.Fatalf("ListDocuments after delete = %+v, want none", docs)
+	}
+}
+
+// Document bookkeeping is scoped per instance, the same as chunks — one
+// instance's document rows must never appear when listing another's.
+func TestSearchIndexDocumentsScopedPerInstance(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedConnector(t, s)
+	instA := seedInstance(t, s, "inst-a")
+	instB := seedInstance(t, s, "inst-b")
+
+	if err := s.SearchIndex().UpsertDocument(ctx, domain.IndexDocument{
+		InstanceID: instA.ID, ItemKey: "X", AttachmentKey: "X", ContentHash: "h", ChunkCount: 1,
+		UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("UpsertDocument A: %v", err)
+	}
+
+	docsB, err := s.SearchIndex().ListDocuments(ctx, instB.ID)
+	if err != nil {
+		t.Fatalf("ListDocuments B: %v", err)
+	}
+	if len(docsB) != 0 {
+		t.Fatalf("instance B sees instance A's document rows: %+v", docsB)
+	}
+}
+
+func TestSearchIndexMeta(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedConnector(t, s)
+	inst := seedInstance(t, s, "zotero")
+
+	if _, ok, err := s.SearchIndex().GetMeta(ctx, inst.ID); err != nil {
+		t.Fatalf("GetMeta (unset): %v", err)
+	} else if ok {
+		t.Fatal("GetMeta reported ok=true for an instance that was never indexed")
+	}
+
+	meta := domain.IndexMeta{
+		InstanceID: inst.ID, EmbedderModel: "nomic-embed-text", EmbedderDimension: 768,
+		UpdatedAt: time.Now().UTC().Truncate(time.Second),
+	}
+	if err := s.SearchIndex().SetMeta(ctx, meta); err != nil {
+		t.Fatalf("SetMeta: %v", err)
+	}
+
+	got, ok, err := s.SearchIndex().GetMeta(ctx, inst.ID)
+	if err != nil {
+		t.Fatalf("GetMeta: %v", err)
+	}
+	if !ok {
+		t.Fatal("GetMeta reported ok=false after SetMeta")
+	}
+	if got.EmbedderModel != "nomic-embed-text" || got.EmbedderDimension != 768 {
+		t.Errorf("GetMeta = %+v, want nomic-embed-text/768", got)
+	}
+
+	// SetMeta again with a different model must replace, not duplicate —
+	// this is the write path a "Rebuild from scratch" after a model change
+	// depends on.
+	meta.EmbedderModel = "mxbai-embed-large"
+	meta.EmbedderDimension = 1024
+	if err := s.SearchIndex().SetMeta(ctx, meta); err != nil {
+		t.Fatalf("SetMeta (replace): %v", err)
+	}
+	got, _, err = s.SearchIndex().GetMeta(ctx, inst.ID)
+	if err != nil {
+		t.Fatalf("GetMeta after replace: %v", err)
+	}
+	if got.EmbedderModel != "mxbai-embed-large" || got.EmbedderDimension != 1024 {
+		t.Errorf("GetMeta after replace = %+v, want mxbai-embed-large/1024", got)
+	}
+}
+
+// ClearInstance must also drop document and meta rows, not just chunks —
+// otherwise a "Rebuild from scratch" would leave stale bookkeeping that a
+// subsequent incremental run could wrongly treat as "already indexed,
+// unchanged".
+func TestSearchIndexClearInstanceAlsoClearsDocumentsAndMeta(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedConnector(t, s)
+	inst := seedInstance(t, s, "zotero")
+
+	if err := s.SearchIndex().UpsertDocument(ctx, domain.IndexDocument{
+		InstanceID: inst.ID, ItemKey: "X", AttachmentKey: "X", ContentHash: "h", ChunkCount: 1,
+		UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("UpsertDocument: %v", err)
+	}
+	if err := s.SearchIndex().SetMeta(ctx, domain.IndexMeta{
+		InstanceID: inst.ID, EmbedderModel: "m", EmbedderDimension: 4, UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("SetMeta: %v", err)
+	}
+
+	if err := s.SearchIndex().ClearInstance(ctx, inst.ID); err != nil {
+		t.Fatalf("ClearInstance: %v", err)
+	}
+
+	docs, err := s.SearchIndex().ListDocuments(ctx, inst.ID)
+	if err != nil {
+		t.Fatalf("ListDocuments: %v", err)
+	}
+	if len(docs) != 0 {
+		t.Errorf("ClearInstance left %d document rows behind", len(docs))
+	}
+	if _, ok, err := s.SearchIndex().GetMeta(ctx, inst.ID); err != nil {
+		t.Fatalf("GetMeta: %v", err)
+	} else if ok {
+		t.Error("ClearInstance left a meta row behind")
 	}
 }
 

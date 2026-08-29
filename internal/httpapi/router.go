@@ -191,7 +191,13 @@ func mountWebUI(mux *http.ServeMux, deps Deps) {
 	mux.Handle("POST /instances/{id}/tools", admin(ui.PostInstanceTool))
 	mux.Handle("POST /instances/{id}/test", admin(ui.PostInstanceTest))
 	mux.Handle("POST /instances/{id}/reindex", admin(ui.PostInstanceReindex))
+	mux.Handle("POST /instances/{id}/reindex/rebuild", admin(ui.PostInstanceReindexRebuild))
 	mux.Handle("POST /instances/{id}/delete", admin(ui.PostInstanceDelete))
+
+	mux.Handle("GET /settings/semantic-search", private(ui.GetSettingsSearch))
+	mux.Handle("POST /settings/semantic-search", admin(ui.PostSettingsSearch))
+	mux.Handle("POST /settings/semantic-search/secret", admin(ui.PostSettingsSearchSecret))
+	mux.Handle("POST /settings/semantic-search/secret/delete", admin(ui.PostSettingsSearchSecretDelete))
 
 	mux.Handle("GET /connectors", private(ui.GetConnectors))
 	mux.Handle("POST /connectors/import", admin(ui.PostImportConnector))

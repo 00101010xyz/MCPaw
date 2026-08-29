@@ -149,9 +149,8 @@ func TestZoteroConnectorShape(t *testing.T) {
 		}
 	}
 
-	// Every declared secret (the Web API key, the embedder sidecar's token)
-	// is optional: the connector must keep working, unauthenticated, against
-	// the local API with nothing configured at all.
+	// Every declared secret is optional: the connector must keep working,
+	// unauthenticated, against the local API with nothing configured at all.
 	for _, secret := range zotero.Secrets() {
 		if secret.Required {
 			t.Errorf("secret %s must be optional", secret.Name)
@@ -159,6 +158,134 @@ func TestZoteroConnectorShape(t *testing.T) {
 	}
 	if missing := zotero.MissingRequiredSecrets(nil); len(missing) != 0 {
 		t.Errorf("Zotero should work with no secrets, missing=%v", missing)
+	}
+}
+
+func TestGiteaConnectorShape(t *testing.T) {
+	recs, err := Builtins()
+	if err != nil {
+		t.Fatalf("Builtins: %v", err)
+	}
+	var gitea *Compiled
+	for _, rec := range recs {
+		if rec.ID == "gitea" {
+			m, err := ParseManifest(rec.Manifest)
+			if err != nil {
+				t.Fatalf("ParseManifest: %v", err)
+			}
+			if gitea, err = Compile(m); err != nil {
+				t.Fatalf("Compile: %v", err)
+			}
+		}
+	}
+	if gitea == nil {
+		t.Fatal("gitea connector not found")
+	}
+
+	for _, want := range []string{"gitea_list_repos", "gitea_get_repo", "gitea_list_tree", "gitea_get_file"} {
+		tool, ok := gitea.Tool(want)
+		if !ok {
+			t.Errorf("missing tool %s", want)
+			continue
+		}
+		if tool.Def.Annotations == nil || tool.Def.Annotations.ReadOnlyHint == nil || !*tool.Def.Annotations.ReadOnlyHint {
+			t.Errorf("tool %s is missing readOnlyHint", want)
+		}
+		if tool.Def.Request.Method != "GET" {
+			t.Errorf("tool %s uses %s, want GET", want, tool.Def.Request.Method)
+		}
+	}
+
+	// owner, repo and ref are all optional: the default behaviour is to
+	// discover and index every repository the configured token can see (see
+	// gitea_list_repos), not one fixed repository — they exist only as an
+	// advanced override to index a single one instead.
+	for _, name := range []string{"owner", "repo", "ref"} {
+		var found *Variable
+		for _, v := range gitea.Variables() {
+			if v.Name == name {
+				v := v
+				found = &v
+			}
+		}
+		if found == nil {
+			t.Errorf("missing variable %s", name)
+			continue
+		}
+		if found.Required {
+			t.Errorf("variable %s must be optional", name)
+		}
+	}
+
+	// The token secret must stay optional so a public repository works with
+	// nothing configured, the same posture Zotero's own optional secret takes.
+	for _, secret := range gitea.Secrets() {
+		if secret.Required {
+			t.Errorf("secret %s must be optional", secret.Name)
+		}
+	}
+
+	// gitea_get_file's path must never interpolate a value that can contain
+	// a slash into a single path segment: PathEscape would turn "a/b" into
+	// "a%2Fb", which upstream will not treat as two segments. sha (a git
+	// blob hash) can't contain a slash; this pins that choice against a
+	// future edit accidentally reintroducing a path-shaped input.
+	getFile, ok := gitea.Tool("gitea_get_file")
+	if !ok {
+		t.Fatal("gitea_get_file tool not found")
+	}
+	if _, hasPath := getFile.Def.InputSchema["properties"].(map[string]any)["path"]; hasPath {
+		t.Error(`gitea_get_file must not take a "path" input — see the blob-SHA-vs-path-escaping comment above`)
+	}
+	if _, hasSHA := getFile.Def.InputSchema["properties"].(map[string]any)["sha"]; !hasSHA {
+		t.Error(`gitea_get_file must take a "sha" input`)
+	}
+}
+
+func TestLinkdingConnectorShape(t *testing.T) {
+	recs, err := Builtins()
+	if err != nil {
+		t.Fatalf("Builtins: %v", err)
+	}
+	var linkding *Compiled
+	for _, rec := range recs {
+		if rec.ID == "linkding" {
+			m, err := ParseManifest(rec.Manifest)
+			if err != nil {
+				t.Fatalf("ParseManifest: %v", err)
+			}
+			if linkding, err = Compile(m); err != nil {
+				t.Fatalf("Compile: %v", err)
+			}
+		}
+	}
+	if linkding == nil {
+		t.Fatal("linkding connector not found")
+	}
+
+	for _, want := range []string{
+		"linkding_list_bookmarks", "linkding_list_archived_bookmarks",
+		"linkding_get_bookmark", "linkding_list_assets", "linkding_get_asset_content",
+	} {
+		tool, ok := linkding.Tool(want)
+		if !ok {
+			t.Errorf("missing tool %s", want)
+			continue
+		}
+		if tool.Def.Annotations == nil || tool.Def.Annotations.ReadOnlyHint == nil || !*tool.Def.Annotations.ReadOnlyHint {
+			t.Errorf("tool %s is missing readOnlyHint", want)
+		}
+		if tool.Def.Request.Method != "GET" {
+			t.Errorf("tool %s uses %s, want GET", want, tool.Def.Request.Method)
+		}
+	}
+
+	// Unlike Zotero's and Gitea's optional credential, every Linkding API
+	// call needs a token — there is no anonymous mode to fall back to.
+	for _, secret := range linkding.Secrets() {
+		if !secret.Required {
+			t.Errorf("secret %s must be required: Linkding has no unauthenticated API mode", secret.Name)
+		}
 	}
 }
 

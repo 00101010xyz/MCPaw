@@ -3,7 +3,7 @@ kind: Connector
 metadata:
   id: zotero-local
   name: Zotero (Local API)
-  version: 1.2.0
+  version: 1.3.0
   description: >-
     Read-only access to a Zotero library through the HTTP API that the Zotero
     desktop application exposes on the local machine. The same manifest also
@@ -24,6 +24,7 @@ spec:
       Origin of the Zotero HTTP API. Use http://host.docker.internal:23119 for
       the local desktop API, or https://api.zotero.org for the hosted service.
     requiresPrivateNetwork: true
+    suggestHostHeaderOverride: true
 
   auth:
     # The local API needs no credential. Declaring the scheme anyway means the
@@ -43,33 +44,12 @@ spec:
       required: true
       pattern: '^[0-9]{1,20}$'
       example: "0"
-    - name: embedderUrl
-      description: >-
-        Base URL of an Ollama-compatible embeddings sidecar (Ollama itself, or
-        text-embeddings-inference), used only for the optional semantic search
-        tool. Leave empty to leave semantic search off — every other tool
-        works without it. host.docker.internal reaches an embedder running on
-        this machine, the same way the base URL above reaches Zotero.
-      required: false
-      pattern: '^https?://[^\s]+$'
-      example: http://host.docker.internal:11434
-    - name: embedderModel
-      description: >-
-        Embedding model name to request from the sidecar, e.g.
-        nomic-embed-text or mxbai-embed-large. Defaults to nomic-embed-text.
-      default: nomic-embed-text
-      required: false
 
   secrets:
     - name: apiKey
       description: >-
         Zotero Web API key. Leave empty for the local desktop API, which does
         not authenticate.
-      required: false
-    - name: embedderApiKey
-      description: >-
-        Bearer token for the embeddings sidecar, if it requires one. Most
-        local setups (a bare Ollama instance) do not.
       required: false
 
   defaults:

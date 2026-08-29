@@ -11,8 +11,8 @@ import (
 type instanceRepo struct{ base }
 
 const instanceColumns = `id, slug, name, description, connector_id, base_url, variables, enabled,
-	allow_private_network, host_header_override, timeout_ms, rate_limit_per_min, max_concurrent, max_response_bytes,
-	created_at, updated_at, version`
+	allow_private_network, host_header_override, timeout_ms,
+	rate_limit_per_min, max_concurrent, max_response_bytes, created_at, updated_at, version`
 
 func (r *instanceRepo) Create(ctx context.Context, i *domain.Instance) error {
 	vars, err := marshalVariables(i.Variables)
@@ -23,8 +23,9 @@ func (r *instanceRepo) Create(ctx context.Context, i *domain.Instance) error {
 		`INSERT INTO instances (`+instanceColumns+`)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		i.ID, i.Slug, i.Name, i.Description, i.ConnectorID, i.BaseURL, vars, boolToInt(i.Enabled),
-		boolToInt(i.AllowPrivateNetwork), i.HostHeaderOverride, i.TimeoutMS, i.RateLimitPerMin,
-		i.MaxConcurrent, i.MaxResponseBytes, formatTime(i.CreatedAt), formatTime(i.UpdatedAt), i.Version)
+		boolToInt(i.AllowPrivateNetwork), i.HostHeaderOverride,
+		i.TimeoutMS, i.RateLimitPerMin, i.MaxConcurrent, i.MaxResponseBytes,
+		formatTime(i.CreatedAt), formatTime(i.UpdatedAt), i.Version)
 	return translate(err, "create instance")
 }
 
@@ -38,13 +39,13 @@ func (r *instanceRepo) Update(ctx context.Context, i *domain.Instance) error {
 	}
 	res, err := r.write.ExecContext(ctx,
 		`UPDATE instances SET slug = ?, name = ?, description = ?, base_url = ?, variables = ?,
-		   enabled = ?, allow_private_network = ?, host_header_override = ?, timeout_ms = ?,
-		   rate_limit_per_min = ?, max_concurrent = ?, max_response_bytes = ?, updated_at = ?,
-		   version = version + 1
+		   enabled = ?, allow_private_network = ?, host_header_override = ?,
+		   timeout_ms = ?, rate_limit_per_min = ?, max_concurrent = ?,
+		   max_response_bytes = ?, updated_at = ?, version = version + 1
 		 WHERE id = ?`,
 		i.Slug, i.Name, i.Description, i.BaseURL, vars, boolToInt(i.Enabled),
-		boolToInt(i.AllowPrivateNetwork), i.HostHeaderOverride, i.TimeoutMS, i.RateLimitPerMin,
-		i.MaxConcurrent, i.MaxResponseBytes, formatTime(i.UpdatedAt), i.ID)
+		boolToInt(i.AllowPrivateNetwork), i.HostHeaderOverride,
+		i.TimeoutMS, i.RateLimitPerMin, i.MaxConcurrent, i.MaxResponseBytes, formatTime(i.UpdatedAt), i.ID)
 	if err != nil {
 		return translate(err, "update instance")
 	}
@@ -200,8 +201,9 @@ func scanInstance(s scanner) (*domain.Instance, error) {
 		createdAt, updatedAtString string
 	)
 	if err := s.Scan(&i.ID, &i.Slug, &i.Name, &i.Description, &i.ConnectorID, &i.BaseURL, &vars,
-		&enabled, &allowPrivate, &i.HostHeaderOverride, &i.TimeoutMS, &i.RateLimitPerMin,
-		&i.MaxConcurrent, &i.MaxResponseBytes, &createdAt, &updatedAtString, &i.Version); err != nil {
+		&enabled, &allowPrivate, &i.HostHeaderOverride,
+		&i.TimeoutMS, &i.RateLimitPerMin, &i.MaxConcurrent, &i.MaxResponseBytes,
+		&createdAt, &updatedAtString, &i.Version); err != nil {
 		return nil, translate(err, "scan instance")
 	}
 	i.Enabled = enabled == 1

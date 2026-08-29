@@ -576,6 +576,27 @@ legend {
   text-transform: uppercase;
 }
 
+.advanced {
+  margin: var(--space-lg) 0 0;
+  padding: 0 var(--space-md) var(--space-md);
+  border: var(--rule) solid var(--color-rule);
+  border-radius: var(--radius-control);
+}
+
+.advanced summary {
+  padding: var(--space-xs) 0;
+  color: var(--color-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-meta);
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.advanced[open] summary {
+  margin-bottom: var(--space-xs);
+}
+
 .field-row {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr));

@@ -1,14 +1,11 @@
 # MCPaw
 
-MCPaw turns ordinary HTTP APIs into [Model Context Protocol](https://modelcontextprotocol.io)
-servers. You describe an API once — declaratively, as a *connector* — configure a
-deployment of it through a web UI, and MCPaw serves it at a stable MCP endpoint that any
-MCP client can connect to. The first shipped connector exposes the **Zotero Desktop**
-local API.
+MCPaw runs a [Model Context Protocol](https://modelcontextprotocol.io) server for Zotero
+Desktop, Gitea and Linkding, packaged as one Docker container with a small web UI for
+configuring instances, tokens, tool access and semantic search.
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design rationale
-(components, data flow, security model, scalability decisions) and
-[`SECURITY.md`](SECURITY.md) for how to report a vulnerability.
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for how it's put together and
+[`SECURITY.md`](SECURITY.md) to report a vulnerability.
 
 ## Quickstart
 
@@ -20,46 +17,23 @@ Then open <http://localhost:8080>. On first run you'll land on `/setup` to creat
 administrator account — that form is only reachable until the first administrator exists,
 after which it is closed permanently.
 
-> **Upgrading from an image built before the `/data` ownership fix?** An earlier version
-> of the `Dockerfile` didn't pre-create `/data` with the right ownership, so Docker
-> materialized the named volume as `root`-owned and the container failed with
-> `permission denied` writing `master.key`. Rebuilding the image alone won't fix an
-> already-created volume — run `docker compose down -v` first (this deletes the named
-> volume, so only do it if you have nothing in it worth keeping yet) and then
-> `docker compose up --build` again.
+Once signed in, **create an instance** (pick a built-in connector — Zotero, Gitea or
+Linkding). The base URL, egress and Host header override are pre-filled with sensible
+defaults for each; expand **Advanced** to review or change them. Creating an instance
+already runs a connection test and, once an embedder is configured (see below), starts
+indexing automatically — so the common path is: pick a connector, fill in what it asks
+for, submit.
 
-Once signed in:
+For Zotero specifically: leave the `userId` variable at its default (`0`), and leave
+**Host header override** at its pre-filled `127.0.0.1:23119` including the port — Zotero's
+local API checks the request's `Host` header as a DNS-rebinding defense and rejects
+anything else, even `host.docker.internal`, with `400 Bad Request`. If Test connection
+400s, confirm `curl -i http://127.0.0.1:23119/api/users/0/items?limit=1` works directly on
+the machine running Zotero first.
 
-1. **Create an instance.** Pick the built-in **Zotero (Local API)** connector. The base
-   URL defaults to `http://host.docker.internal:23119`, which is how a container reaches
-   the Zotero desktop app's local API running on your machine (`compose.yml` already maps
-   `host.docker.internal` for you on Linux; Docker Desktop on macOS/Windows resolves it
-   automatically).
-2. **Enable private-network egress** on the instance. MCPaw refuses to reach loopback and
-   private-network addresses by default — this is a deliberate, audited opt-in, not a bug.
-   Cloud instance-metadata addresses (`169.254.169.254` and friends) stay blocked
-   regardless.
-3. Leave the `userId` variable at its default (`0`) — that's what the local API always
-   uses. No secret is required for the local API.
-4. Leave **Host header override** at its pre-filled `127.0.0.1:23119` — **including the
-   port**; `127.0.0.1` alone is a different Host header and Zotero will still reject it.
-   Zotero's local API checks the request's `Host` header as a DNS-rebinding defense and
-   only accepts `127.0.0.1`, `localhost`, or `[::1]` on the exact port it's listening on
-   — rejecting anything else, including `host.docker.internal`, with `400 Bad Request`.
-   This field lets MCPaw connect via `host.docker.internal` (the only address that
-   actually reaches your host from inside the container) while still presenting a `Host`
-   header Zotero accepts.
-5. Click **Test connection** to confirm MCPaw can actually reach a running Zotero desktop
-   app before handing the endpoint to a client.
-6. **Issue a token** (Tokens → Issue a token), scoped to this one instance rather than to
-   every instance.
-7. Point your MCP client at `http://localhost:8080/mcp/<slug>` with
-   `Authorization: Bearer <token>`.
-
-**Seeing `the upstream API returned 400 Bad Request` on Test connection?** This is almost
-always the Host header check above. Confirm with `curl -i http://127.0.0.1:23119/api/users/0/items?limit=1`
-directly on the machine running Zotero — if that succeeds but MCPaw still 400s, check the
-instance's **Host header override** field is set to `127.0.0.1:23119`.
+Once the instance exists: **issue a token** (Tokens → Issue a token, scoped to this
+instance) and point your MCP client at `http://localhost:8080/mcp/<slug>` with
+`Authorization: Bearer <token>`.
 
 ## Running without Docker
 
@@ -116,26 +90,21 @@ go test ./...
 SQLite database and exercise it through actual HTTP requests — including the CSRF and
 bearer-token-scoping behaviour — rather than mocking the stack away.
 
-## Semantic search over PDFs and snapshots
+## Semantic search
 
-The Zotero connector can index the text it extracts from PDF and snapshot
-attachments and expose a `zotero_semantic_search` tool that returns short,
-relevant excerpts instead of whole documents — cheaper for an MCP client to
-consume than `zotero_get_item_fulltext`, and more targeted than
-`zotero_search_items`'s metadata search. It needs a local embeddings sidecar
-(e.g. [Ollama](https://ollama.com) running an embedding model such as
-`nomic-embed-text`, exposed at `http://host.docker.internal:11434`) — set
-that as the instance's `embedderUrl` variable, then use **Build index** on
-the instance page. The tool is only advertised to clients once the index
-holds at least one chunk; leaving `embedderUrl` empty leaves the feature off
-entirely, with no other effect on the instance.
+A Zotero, Gitea or Linkding instance can index its content and expose a
+`semantic_search` tool that returns short, relevant excerpts instead of whole
+documents — advertised to clients as the first and preferred tool once it's
+active.
 
-## Adding a connector
-
-A connector is a declarative YAML manifest — base URL, authentication scheme, variables,
-secrets, and a list of tools, each a JSON Schema plus a request template. It is data, not
-code: MCPaw never executes anything from a manifest. Import one from Connectors → Import a
-manifest, where it is fully validated (every template reference, JSON Schema, and request
-definition) before it's stored. See the built-in
-[`internal/connector/builtin/zotero-local.yaml`](internal/connector/builtin/zotero-local.yaml)
-as a worked example, and `docs/ARCHITECTURE.md` §5 for the manifest reference.
+Configure the embedder once, under **Search** (not per instance): point it at
+a local sidecar such as [Ollama](https://ollama.com) — the form is pre-filled
+with the common default, `http://host.docker.internal:11434` running
+`nomic-embed-text`. Saving a URL there automatically starts indexing every
+existing instance that doesn't have one yet, and every new instance from then
+on; **Update index** and **Rebuild from scratch** on an instance's own page
+are there for a manual re-run, not a required step. Results below a relevance
+floor are dropped rather than returned as noise, and a run's stats line
+reports documents with no extractable text or that failed to embed, so a
+misconfigured embedder is visible on the page instead of silently indexing
+nothing.

@@ -139,7 +139,22 @@ recovered, audited, and returned as a generic 500.
 
 ---
 
-## 6. Deployment topology
+## 6. Web UI conventions
+
+Server-rendered `html/template`, CSRF-protected forms, minimal JS (a command palette and a
+handful of auto-submitting controls — no framework, no build step).
+
+One deliberate rule: **a control never exists solely to confirm a choice already fully
+specified by another control on the same form.** If a value is already known — a `<select>`
+whose only purpose is to pick one of its own options — acting on it directly (`onchange`
+submits the form) beats making the operator click a second button to say "yes, that one."
+This does not apply to anything consequential or destructive (deleting an instance,
+opening private-network egress, rebuilding an index) — those keep an explicit, separate
+confirmation on purpose; the rule is about clicks that add friction without adding safety.
+
+---
+
+## 7. Deployment topology
 
 ```
 docker compose up  ──►  mcpaw:8080   ──►  /            web UI (admin)
@@ -157,7 +172,7 @@ web UI pre-fills it whenever a connector's default base URL points at `host.dock
 
 ---
 
-## 7. Repository layout
+## 8. Repository layout
 
 ```
 cmd/mcpaw/                  composition root + CLI (serve, healthcheck, keygen)

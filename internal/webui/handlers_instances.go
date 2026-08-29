@@ -107,7 +107,11 @@ func suggestHostHeaderOverride(defaultBaseURL string) string {
 // submission from the same form.
 func (s *Server) PostInstances(w http.ResponseWriter, r *http.Request) {
 	connectorID := r.PostFormValue("connector_id")
-	if r.PostFormValue("action") == "choose" {
+	// The connector <select> submits itself on change (no separate "Use this
+	// connector" button — selecting is the action). Only the actual "Create
+	// instance" button carries action=create; anything else, including that
+	// auto-submit, just re-renders the form for the newly chosen connector.
+	if r.PostFormValue("action") != "create" {
 		s.renderNewInstance(w, r, http.StatusOK, connectorID, nil)
 		return
 	}

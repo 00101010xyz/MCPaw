@@ -13,13 +13,12 @@
   <input type="hidden" name="csrf_token" value="{{.CSRF}}">
 
   <label for="connector_id">Connector</label>
-  <select id="connector_id" name="connector_id" required>
+  <select id="connector_id" name="connector_id" required onchange="this.form.submit()">
     {{range $d.Connectors}}
       <option value="{{.Record.ID}}"{{if eq .Record.ID $d.SelectedConnector}} selected{{end}}>{{.Record.Name}} — {{len .Compiled.Tools}} tools</option>
     {{end}}
   </select>
   <p class="hint">Switching connector reloads this form with that connector's defaults and variables.</p>
-  <button type="submit" name="action" value="choose" class="btn btn--submit">Use this connector</button>
 
   {{with $d.Selected}}
   <hr class="divider">

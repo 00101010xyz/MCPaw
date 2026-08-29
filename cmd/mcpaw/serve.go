@@ -122,8 +122,8 @@ func runServe(args []string) error {
 		Repo: repos.Instances(), Connectors: connectors, Sealer: sealer, Executor: executor, Audit: audit,
 	})
 	indexer := service.NewIndexer(service.IndexerConfig{
-		Repo: repos.SearchIndex(), Instances: instances, Audit: audit,
-		Embedder: &index.Embedder{Client: executor.Client()}, Logger: logger,
+		Repo: repos.SearchIndex(), Platform: repos.Platform(), Instances: instances, Audit: audit,
+		Embedder: &index.Embedder{Client: executor.Client(), Limiter: limiter}, Sealer: sealer, Logger: logger,
 	})
 	mcpBackend := service.NewMCPBackend(instances, indexer, audit, version, logger)
 

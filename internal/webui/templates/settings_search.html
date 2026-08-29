@@ -1,0 +1,72 @@
+{{define "content"}}
+{{$d := .Data}}
+{{$csrf := .CSRF}}
+{{$settings := $d.Settings}}
+
+<div class="page-head"><h1>Semantic search</h1></div>
+
+<section class="panel panel--roomy">
+  <p class="lede">
+    One embedder is shared by every instance that can build a semantic-search index
+    (Zotero, Gitea, Linkding) — configure it once here rather than per instance. Point
+    it at a local embeddings sidecar (Ollama or text-embeddings-inference), then build
+    or update each instance's index from that instance's own page.
+  </p>
+  <form method="post" action="/settings/semantic-search">
+    <input type="hidden" name="csrf_token" value="{{$csrf}}">
+
+    <label for="embedder_url">Embedder URL</label>
+    <input id="embedder_url" name="embedder_url" type="url" value="{{$settings.URL}}"
+           placeholder="http://host.docker.internal:11434">
+    <p class="hint">Leave empty to leave semantic search off for every instance.</p>
+
+    <label for="embedder_model">Embedder model</label>
+    <input id="embedder_model" name="embedder_model" type="text" value="{{$settings.Model}}"
+           placeholder="nomic-embed-text">
+
+    <label for="rate_limit_per_min">Rate limit — embed calls per minute</label>
+    <input id="rate_limit_per_min" name="rate_limit_per_min" type="number" min="0"
+           value="{{$settings.RateLimitPerMin}}">
+    <p class="hint">
+      0 disables throttling. This budget is shared across every instance, since they
+      all call the same embedder.
+    </p>
+
+    <button type="submit" class="btn btn--primary btn--submit">Save</button>
+  </form>
+</section>
+
+<section class="panel panel--tight">
+  <div class="panel__head"><h2>API key</h2></div>
+  <p class="lede">
+    Bearer token for the embedder sidecar, if it requires one. Most local setups (a
+    bare Ollama instance) do not.
+  </p>
+  <div class="table-wrap">
+    <table class="table-stack">
+      <thead><tr><th>State</th><th>Set value</th></tr></thead>
+      <tbody>
+        <tr>
+          <td data-label="State">
+            {{if $d.APIKeySet}}<span class="tag tag--ok">set</span>{{else}}<span class="tag tag--off">empty</span>{{end}}
+          </td>
+          <td data-label="Set value">
+            <form method="post" action="/settings/semantic-search/secret" class="secret-set">
+              <input type="hidden" name="csrf_token" value="{{$csrf}}">
+              <label class="visually-hidden" for="secret-embedder">New API key</label>
+              <input id="secret-embedder" type="password" name="value" autocomplete="new-password" placeholder="New value">
+              <button type="submit" class="btn btn--sm">Save</button>
+            </form>
+            {{if $d.APIKeySet}}
+            <form method="post" action="/settings/semantic-search/secret/delete" class="inline">
+              <input type="hidden" name="csrf_token" value="{{$csrf}}">
+              <button type="submit" class="linkbtn linkbtn--danger">Remove</button>
+            </form>
+            {{end}}
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+{{end}}

@@ -12,11 +12,25 @@ import (
 	"time"
 
 	"github.com/00101010xyz/mcpaw/internal/domain"
-	"github.com/00101010xyz/mcpaw/internal/engine"
 	"github.com/00101010xyz/mcpaw/internal/index"
 	"github.com/00101010xyz/mcpaw/internal/index/source"
+	"github.com/00101010xyz/mcpaw/internal/secrets"
 	"github.com/00101010xyz/mcpaw/internal/store"
+	"github.com/00101010xyz/mcpaw/internal/upstream"
 )
+
+// platformSecretScope is the AAD scope used to seal the platform-wide
+// embedder API key — a sentinel in place of an instance ID, since this
+// secret belongs to no one instance (see domain.EmbedderSettings).
+const platformSecretScope = "platform"
+
+// embedderEgressPolicy always allows private-network egress for embedder
+// calls: the embedder is platform infrastructure the operator points at
+// their own sidecar (a local Ollama instance is the common case), not an
+// upstream API whose egress should be gated by any one instance's own
+// policy. Cloud instance-metadata addresses stay blocked regardless — see
+// upstream.CheckIP.
+var embedderEgressPolicy = upstream.EgressPolicy{AllowPrivateNetworks: true}
 
 // Chunking, batching and timeout caps for one reindex run. These bound how
 // long and how much memory an operator-triggered reindex can consume; a
@@ -57,6 +71,18 @@ type IndexStatus struct {
 	// DocumentsPruned counts documents that were indexed before but were not
 	// seen this crawl — deleted or renamed upstream — and so were removed.
 	DocumentsPruned int
+	// DocumentsEmptyText counts documents the crawl visited but which had no
+	// extracted text at all — nothing to chunk or embed, so nothing was
+	// written for them. A run with a high count here alongside a low
+	// ChunksIndexed usually means there was nothing to index yet (no Zotero
+	// fulltext extracted, no completed Linkding snapshot, no matching Gitea
+	// file), not that embedding is broken.
+	DocumentsEmptyText int
+	// DocumentsFailed counts documents that errored while embedding or
+	// storing chunks; LastError holds the most recent such error. Unlike
+	// DocumentsEmptyText, a nonzero count here usually means the embedder is
+	// unreachable or misconfigured.
+	DocumentsFailed int
 	LastError       string
 	StartedAt       time.Time
 	FinishedAt      time.Time
@@ -74,21 +100,25 @@ type SearchHit struct {
 // IndexerConfig wires the Indexer service.
 type IndexerConfig struct {
 	Repo      store.SearchIndexRepository
+	Platform  store.PlatformRepository
 	Instances *Instances
 	Audit     *Audit
 	Embedder  *index.Embedder
+	Sealer    secrets.Sealer
 	Logger    *slog.Logger
 }
 
 // Indexer builds and serves the semantic-search index over Zotero PDF and
-// snapshot text. It is entirely additive: an instance with no embedder
-// configured and no chunks indexed behaves exactly as it did before this
-// feature existed — Ready reports false and no tool is advertised.
+// snapshot text. It is entirely additive: with no embedder configured and no
+// chunks indexed, an instance behaves exactly as it did before this feature
+// existed — Ready reports false and no tool is advertised.
 type Indexer struct {
 	repo      store.SearchIndexRepository
+	platform  store.PlatformRepository
 	instances *Instances
 	audit     *Audit
 	embedder  *index.Embedder
+	sealer    secrets.Sealer
 	logger    *slog.Logger
 
 	mu     sync.Mutex
@@ -102,9 +132,86 @@ func NewIndexer(cfg IndexerConfig) *Indexer {
 		logger = slog.Default()
 	}
 	return &Indexer{
-		repo: cfg.Repo, instances: cfg.Instances, audit: cfg.Audit, embedder: cfg.Embedder,
+		repo: cfg.Repo, platform: cfg.Platform, instances: cfg.Instances, audit: cfg.Audit,
+		embedder: cfg.Embedder, sealer: cfg.Sealer,
 		logger: logger, status: map[string]*IndexStatus{},
 	}
+}
+
+// EmbedderSettings reports the platform-wide semantic-search embedder
+// configuration and whether an API key is currently set (never its value).
+func (s *Indexer) EmbedderSettings(ctx context.Context) (domain.EmbedderSettings, bool, error) {
+	settings, err := s.platform.GetEmbedderSettings(ctx)
+	if err != nil {
+		return domain.EmbedderSettings{}, false, err
+	}
+	_, apiKeySet, err := s.platform.GetEmbedderAPIKey(ctx)
+	if err != nil {
+		return domain.EmbedderSettings{}, false, err
+	}
+	return settings, apiKeySet, nil
+}
+
+// UpdateEmbedderSettings saves the embedder URL, model and rate limit shared
+// by every instance. Leaving url empty leaves semantic search off entirely
+// for every instance, with no other effect.
+func (s *Indexer) UpdateEmbedderSettings(ctx context.Context, actor Actor, url, model string, rateLimitPerMin int) error {
+	if rateLimitPerMin < 0 {
+		rateLimitPerMin = 0
+	}
+	settings := domain.EmbedderSettings{
+		URL: strings.TrimSpace(url), Model: strings.TrimSpace(model),
+		RateLimitPerMin: rateLimitPerMin, UpdatedAt: time.Now(),
+	}
+	if err := s.platform.SetEmbedderSettings(ctx, settings); err != nil {
+		return err
+	}
+	s.audit.Success(ctx, actor, domain.ActionPlatformSettingsUpdate, "platform", "embedder",
+		map[string]any{"url_set": settings.URL != "", "rate_limit_per_min": settings.RateLimitPerMin})
+	return nil
+}
+
+// SetEmbedderAPIKey encrypts and stores the embedder sidecar's API key.
+func (s *Indexer) SetEmbedderAPIKey(ctx context.Context, actor Actor, plaintext string) error {
+	if plaintext == "" {
+		return fmt.Errorf("%w: the secret value must not be empty; delete it instead", domain.ErrInvalidInput)
+	}
+	if len(plaintext) > 8192 {
+		return fmt.Errorf("%w: the secret value is too long", domain.ErrInvalidInput)
+	}
+	ciphertext, err := s.sealer.Seal(secrets.SecretAAD(platformSecretScope, index.EmbedderAPIKey), []byte(plaintext))
+	if err != nil {
+		return err
+	}
+	if err := s.platform.SetEmbedderAPIKey(ctx, ciphertext); err != nil {
+		return err
+	}
+	s.audit.Success(ctx, actor, domain.ActionPlatformSettingsUpdate, "platform", "embedder",
+		map[string]any{"secret": "set"})
+	return nil
+}
+
+// DeleteEmbedderAPIKey removes the stored embedder API key.
+func (s *Indexer) DeleteEmbedderAPIKey(ctx context.Context, actor Actor) error {
+	if err := s.platform.DeleteEmbedderAPIKey(ctx); err != nil {
+		return err
+	}
+	s.audit.Success(ctx, actor, domain.ActionPlatformSettingsUpdate, "platform", "embedder",
+		map[string]any{"secret": "deleted"})
+	return nil
+}
+
+// embedderAPIKey decrypts the stored embedder API key, if any is set.
+func (s *Indexer) embedderAPIKey(ctx context.Context) (string, error) {
+	ciphertext, ok, err := s.platform.GetEmbedderAPIKey(ctx)
+	if err != nil || !ok {
+		return "", err
+	}
+	plaintext, err := s.sealer.Open(secrets.SecretAAD(platformSecretScope, index.EmbedderAPIKey), ciphertext)
+	if err != nil {
+		return "", fmt.Errorf("could not decrypt the embedder API key; the master key may have changed: %w", err)
+	}
+	return string(plaintext), nil
 }
 
 // Supported reports whether a connector has a registered crawler (see
@@ -207,8 +314,18 @@ func (s *Indexer) runReindex(instanceID string, mode ReindexMode) {
 		s.fail(instanceID, err)
 		return
 	}
-	if resolved.Instance.EmbedderURL == "" {
-		s.fail(instanceID, fmt.Errorf("set the embedder URL on this instance before indexing"))
+	settings, err := s.platform.GetEmbedderSettings(ctx)
+	if err != nil {
+		s.fail(instanceID, err)
+		return
+	}
+	if settings.URL == "" {
+		s.fail(instanceID, fmt.Errorf("set the embedder URL under Settings → Semantic search before indexing"))
+		return
+	}
+	apiKey, err := s.embedderAPIKey(ctx)
+	if err != nil {
+		s.fail(instanceID, err)
 		return
 	}
 
@@ -224,7 +341,7 @@ func (s *Indexer) runReindex(instanceID string, mode ReindexMode) {
 		}
 	}
 
-	effectiveModel := resolved.Instance.EmbedderModel
+	effectiveModel := settings.Model
 	if effectiveModel == "" {
 		effectiveModel = index.DefaultEmbedder
 	}
@@ -267,6 +384,7 @@ func (s *Indexer) runReindex(instanceID string, mode ReindexMode) {
 		seen[key] = true
 		s.addItem(instanceID)
 		if strings.TrimSpace(text) == "" {
+			s.addEmptyText(instanceID)
 			return nil
 		}
 
@@ -277,13 +395,16 @@ func (s *Indexer) runReindex(instanceID string, mode ReindexMode) {
 				return nil
 			}
 			if err := s.repo.DeleteDocumentChunks(ctx, instanceID, doc.ItemKey, doc.AttachmentKey); err != nil {
-				s.logger.Warn("index: clearing a changed document's old chunks failed",
-					slog.String("attachment", doc.AttachmentKey), slog.String("error", err.Error()))
+				s.addFailed(instanceID, fmt.Errorf("clearing %q's old chunks: %w", doc.AttachmentKey, err))
 				return nil
 			}
 		}
 
-		chunkCount, chunkDim := s.indexDocument(ctx, resolved, target, instanceID, doc, text)
+		chunkCount, chunkDim, ierr := s.indexDocument(ctx, instanceID, settings, apiKey, doc, text)
+		if ierr != nil {
+			s.addFailed(instanceID, ierr)
+			return nil
+		}
 		if chunkCount == 0 {
 			return nil
 		}
@@ -339,11 +460,12 @@ func hashText(s string) string {
 }
 
 // indexDocument chunks, embeds and stores one document's text, returning how
-// many chunks it produced and their vector dimension (both 0 on failure).
-// This is the part every source shares — chunking and embedding know
-// nothing about where the text came from — unlike the crawl itself, which
-// is entirely source-specific (see internal/index/source).
-func (s *Indexer) indexDocument(ctx context.Context, resolved *Resolved, target *engine.Target, instanceID string, doc source.Document, text string) (chunkCount, dimension int) {
+// many chunks it produced and their vector dimension. This is the part
+// every source shares — chunking and embedding know nothing about where the
+// text came from — unlike the crawl itself, which is entirely
+// source-specific (see internal/index/source). A non-nil error means the
+// caller should count this document as failed rather than silently empty.
+func (s *Indexer) indexDocument(ctx context.Context, instanceID string, settings domain.EmbedderSettings, apiKey string, doc source.Document, text string) (chunkCount, dimension int, err error) {
 	spans := chunkFor(doc, text)
 	if len(spans) > reindexMaxChunksPerFile {
 		spans = spans[:reindexMaxChunksPerFile]
@@ -356,11 +478,10 @@ func (s *Indexer) indexDocument(ctx context.Context, resolved *Resolved, target 
 	var chunks []domain.IndexChunk
 	for i := 0; i < len(texts); i += reindexEmbedBatch {
 		end := min(i+reindexEmbedBatch, len(texts))
-		vectors, err := s.embedder.Embed(ctx, resolved.Instance.EmbedderURL, resolved.Instance.EmbedderModel,
-			target.Secrets[index.EmbedderAPIKey], target.Policy, texts[i:end])
-		if err != nil {
-			s.logger.Warn("index: embedding failed", slog.String("attachment", doc.AttachmentKey), slog.String("error", err.Error()))
-			return 0, 0
+		vectors, embedErr := s.embedder.Embed(ctx, settings.URL, settings.Model, apiKey, settings.RateLimitPerMin,
+			embedderEgressPolicy, texts[i:end])
+		if embedErr != nil {
+			return 0, 0, fmt.Errorf("embedding %q: %w", doc.AttachmentKey, embedErr)
 		}
 		for j, v := range vectors {
 			sp := spans[i+j]
@@ -371,14 +492,13 @@ func (s *Indexer) indexDocument(ctx context.Context, resolved *Resolved, target 
 		}
 	}
 	if len(chunks) == 0 {
-		return 0, 0
+		return 0, 0, nil
 	}
 	if err := s.repo.InsertChunks(ctx, instanceID, chunks); err != nil {
-		s.logger.Warn("index: storing chunks failed", slog.String("attachment", doc.AttachmentKey), slog.String("error", err.Error()))
-		return 0, 0
+		return 0, 0, fmt.Errorf("storing chunks for %q: %w", doc.AttachmentKey, err)
 	}
 	s.addChunks(instanceID, len(chunks))
-	return len(chunks), len(chunks[0].Embedding)
+	return len(chunks), len(chunks[0].Embedding), nil
 }
 
 // chunkFor picks the splitter a document's crawler asked for. A source sets
@@ -424,6 +544,29 @@ func (s *Indexer) addPruned(instanceID string) {
 	}
 }
 
+func (s *Indexer) addEmptyText(instanceID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if st := s.status[instanceID]; st != nil {
+		st.DocumentsEmptyText++
+	}
+}
+
+// addFailed records a per-document failure: it still logs (an operator
+// tailing the logs sees every failure, not just the last), but unlike the
+// old warn-only handling it also counts the failure and surfaces its message
+// as LastError, so a broken embedder is visible on the instance page instead
+// of only in ChunksIndexed silently staying at zero.
+func (s *Indexer) addFailed(instanceID string, err error) {
+	s.logger.Warn("index: document failed", slog.String("error", err.Error()))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if st := s.status[instanceID]; st != nil {
+		st.DocumentsFailed++
+		st.LastError = err.Error()
+	}
+}
+
 func (s *Indexer) fail(instanceID string, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -456,20 +599,23 @@ func (s *Indexer) Search(ctx context.Context, instanceID, query string, limit in
 		limit = defaultSearchLimit
 	}
 
-	resolved, err := s.instances.ResolveByID(ctx, instanceID)
+	if _, err := s.instances.ResolveByID(ctx, instanceID); err != nil {
+		return nil, err
+	}
+	settings, err := s.platform.GetEmbedderSettings(ctx)
 	if err != nil {
 		return nil, err
 	}
-	target, err := s.instances.Target(resolved)
+	if settings.URL == "" {
+		return nil, fmt.Errorf("semantic search is not configured on this deployment")
+	}
+	apiKey, err := s.embedderAPIKey(ctx)
 	if err != nil {
 		return nil, err
-	}
-	if resolved.Instance.EmbedderURL == "" {
-		return nil, fmt.Errorf("semantic search is not configured for this instance")
 	}
 
-	vectors, err := s.embedder.Embed(ctx, resolved.Instance.EmbedderURL, resolved.Instance.EmbedderModel,
-		target.Secrets[index.EmbedderAPIKey], target.Policy, []string{query})
+	vectors, err := s.embedder.Embed(ctx, settings.URL, settings.Model, apiKey, settings.RateLimitPerMin,
+		embedderEgressPolicy, []string{query})
 	if err != nil {
 		return nil, err
 	}

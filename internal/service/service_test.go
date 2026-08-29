@@ -70,8 +70,8 @@ func newTestEnv(t *testing.T) *testEnv {
 	})
 	tokens := NewTokens(st.Tokens(), st.Instances(), keyring, audit)
 	indexer := NewIndexer(IndexerConfig{
-		Repo: st.SearchIndex(), Instances: instances, Audit: audit,
-		Embedder: &index.Embedder{Client: executor.Client()},
+		Repo: st.SearchIndex(), Platform: st.Platform(), Instances: instances, Audit: audit,
+		Embedder: &index.Embedder{Client: executor.Client()}, Sealer: sealer,
 	})
 
 	return &testEnv{

@@ -13,7 +13,6 @@ import (
 	"github.com/00101010xyz/mcpaw/internal/connector"
 	"github.com/00101010xyz/mcpaw/internal/domain"
 	"github.com/00101010xyz/mcpaw/internal/engine"
-	"github.com/00101010xyz/mcpaw/internal/index"
 	"github.com/00101010xyz/mcpaw/internal/platform/id"
 	"github.com/00101010xyz/mcpaw/internal/secrets"
 	"github.com/00101010xyz/mcpaw/internal/store"
@@ -125,15 +124,10 @@ type CreateInput struct {
 	Enabled             bool
 	AllowPrivateNetwork bool
 	HostHeaderOverride  string
-	// EmbedderURL and EmbedderModel configure semantic search for this
-	// instance; see domain.Instance for why they live here rather than in
-	// the connector manifest.
-	EmbedderURL      string
-	EmbedderModel    string
-	TimeoutMS        int
-	RateLimitPerMin  int
-	MaxConcurrent    int
-	MaxResponseBytes int64
+	TimeoutMS           int
+	RateLimitPerMin     int
+	MaxConcurrent       int
+	MaxResponseBytes    int64
 }
 
 // UpdateInput describes a configuration change. Nil pointers leave a field
@@ -147,8 +141,6 @@ type UpdateInput struct {
 	Enabled             *bool
 	AllowPrivateNetwork *bool
 	HostHeaderOverride  *string
-	EmbedderURL         *string
-	EmbedderModel       *string
 	TimeoutMS           *int
 	RateLimitPerMin     *int
 	MaxConcurrent       *int
@@ -213,8 +205,6 @@ func (s *Instances) Create(ctx context.Context, actor Actor, in CreateInput) (*d
 		Variables: in.Variables, Enabled: in.Enabled,
 		AllowPrivateNetwork: in.AllowPrivateNetwork,
 		HostHeaderOverride:  hostHeaderOverride,
-		EmbedderURL:         strings.TrimSpace(in.EmbedderURL),
-		EmbedderModel:       strings.TrimSpace(in.EmbedderModel),
 		TimeoutMS:           clampTimeout(pickInt(in.TimeoutMS, defaults.TimeoutMS, connector.DefaultTimeoutMS)),
 		RateLimitPerMin:     clampNonNegative(pickInt(in.RateLimitPerMin, defaults.RateLimitPerMin, connector.DefaultRateLimitPerMin)),
 		MaxConcurrent:       clampConcurrency(pickInt(in.MaxConcurrent, defaults.MaxConcurrent, connector.DefaultMaxConcurrent)),
@@ -298,14 +288,6 @@ func (s *Instances) Update(ctx context.Context, actor Actor, instanceID string, 
 		}
 		inst.HostHeaderOverride, changed["host_header_override"] = override, override
 	}
-	if in.EmbedderURL != nil {
-		url := strings.TrimSpace(*in.EmbedderURL)
-		inst.EmbedderURL, changed["embedder_url"] = url, url
-	}
-	if in.EmbedderModel != nil {
-		model := strings.TrimSpace(*in.EmbedderModel)
-		inst.EmbedderModel, changed["embedder_model"] = model, model
-	}
 	if in.TimeoutMS != nil {
 		inst.TimeoutMS, changed["timeout_ms"] = clampTimeout(*in.TimeoutMS), clampTimeout(*in.TimeoutMS)
 	}
@@ -359,18 +341,12 @@ func (s *Instances) SetSecret(ctx context.Context, actor Actor, instanceID, name
 	if err != nil {
 		return err
 	}
-	// A reserved name (currently just the semantic-search embedder API key)
-	// is platform-level, not connector-declared, and so is exempt from the
-	// connector's own secret list — that is the whole point of it living
-	// outside the manifest.
-	if !isReservedSecretName(name) {
-		entry, err := s.connectors.Get(ctx, inst.ConnectorID)
-		if err != nil {
-			return err
-		}
-		if err := entry.Compiled.ValidateSecretNames([]string{name}); err != nil {
-			return fmt.Errorf("%w: %s", domain.ErrInvalidInput, err)
-		}
+	entry, err := s.connectors.Get(ctx, inst.ConnectorID)
+	if err != nil {
+		return err
+	}
+	if err := entry.Compiled.ValidateSecretNames([]string{name}); err != nil {
+		return fmt.Errorf("%w: %s", domain.ErrInvalidInput, err)
 	}
 	if plaintext == "" {
 		return fmt.Errorf("%w: the secret value must not be empty; delete it instead", domain.ErrInvalidInput)
@@ -405,32 +381,6 @@ func (s *Instances) DeleteSecret(ctx context.Context, actor Actor, instanceID, n
 		map[string]any{"secret": name, "action": "deleted"})
 	return nil
 }
-
-// SecretIsSet reports whether a named secret has a stored value for this
-// instance, without decrypting it. Unlike Detail().Secrets, this also works
-// for reserved, non-connector-declared names such as the embedder API key.
-func (s *Instances) SecretIsSet(ctx context.Context, instanceID, name string) (bool, error) {
-	names, err := s.repo.ListSecretNames(ctx, instanceID)
-	if err != nil {
-		return false, err
-	}
-	for _, n := range names {
-		if n == name {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-// reservedSecretNames are platform-level secret names that live outside any
-// connector manifest. They are validated here, once, rather than scattered
-// across every feature that needs a per-instance credential the connector
-// doesn't know about.
-var reservedSecretNames = map[string]bool{
-	index.EmbedderAPIKey: true,
-}
-
-func isReservedSecretName(name string) bool { return reservedSecretNames[name] }
 
 // SetToolEnabled turns one tool on or off for an instance.
 func (s *Instances) SetToolEnabled(ctx context.Context, actor Actor, instanceID, toolName string, enabled bool) error {

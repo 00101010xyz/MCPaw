@@ -55,36 +55,36 @@
   {{if .Compiled.Manifest.Spec.BaseURL.RequiresPrivateNetwork}}
   <div class="callout">
     <h3>This connector talks to a private address</h3>
-    <p>
-      MCPaw refuses loopback and private-network destinations unless you open them
-      for this instance. Cloud instance-metadata addresses stay blocked either way.
-    </p>
+    <p>Loopback and private-network egress is pre-enabled below for that reason.</p>
   </div>
   {{end}}
-
-  <label class="check">
-    <input type="checkbox" name="allow_private_network" {{if $d.Form.AllowPrivateNetwork}}checked{{end}}>
-    Allow requests to loopback and private-network addresses
-  </label>
-
-  <label for="host_header_override">Host header override <span class="muted">— optional</span></label>
-  <input id="host_header_override" name="host_header_override" type="text"
-         value="{{$d.Form.HostHeaderOverride}}" placeholder="e.g. 127.0.0.1:23119">
-  <p class="hint">
-    Include the port, e.g. <code>127.0.0.1:23119</code> — a bare <code>127.0.0.1</code> with no
-    port is a different Host header and may still be rejected. Some local services check the
-    request's <code>Host</code> header as a defense against DNS rebinding and reject anything
-    but a loopback name on the exact port they listen on — Zotero's local API is one. A
-    container has to reach such a service through a different address (like
-    <code>host.docker.internal</code>), which then gets rejected as the Host header unless
-    overridden here. Leave empty unless you hit a <code>400 Bad Request</code> that a direct
-    <code>curl</code> from the host doesn't reproduce.
-  </p>
 
   <label class="check">
     <input type="checkbox" name="enabled" {{if $d.Form.Enabled}}checked{{end}}>
     Serve this endpoint immediately
   </label>
+
+  <details class="advanced">
+    <summary>Advanced</summary>
+
+    <label class="check">
+      <input type="checkbox" name="allow_private_network" {{if $d.Form.AllowPrivateNetwork}}checked{{end}}>
+      Allow requests to loopback and private-network addresses
+    </label>
+    <p class="hint">
+      Pre-checked, since most connectors here run on your machine or LAN. Cloud
+      instance-metadata addresses stay blocked either way.
+    </p>
+
+    <label for="host_header_override">Host header override <span class="muted">— optional</span></label>
+    <input id="host_header_override" name="host_header_override" type="text"
+           value="{{$d.Form.HostHeaderOverride}}" placeholder="e.g. 127.0.0.1:23119">
+    <p class="hint">
+      Only needed if "Test connection" 400s while a direct <code>curl</code> from the host
+      succeeds — some local services reject any Host header but a loopback name. Include the
+      port.
+    </p>
+  </details>
 
   <button type="submit" name="action" value="create" class="btn btn--primary btn--submit">Create instance</button>
   {{end}}

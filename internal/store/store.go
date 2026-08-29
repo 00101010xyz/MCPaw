@@ -22,6 +22,7 @@ type Repositories interface {
 	Tokens() TokenRepository
 	Audit() AuditRepository
 	SearchIndex() SearchIndexRepository
+	Platform() PlatformRepository
 
 	// Ping verifies the datastore is reachable; used by the readiness probe.
 	Ping(ctx context.Context) error
@@ -148,4 +149,18 @@ type SearchIndexRepository interface {
 	// SetMeta records which embedder model and dimension the index is now
 	// built with.
 	SetMeta(ctx context.Context, meta domain.IndexMeta) error
+}
+
+// PlatformRepository persists platform-wide settings that apply to every
+// instance rather than to one of them — currently just the shared semantic
+// search embedder configuration (see domain.EmbedderSettings). Its API key,
+// when the embedder needs one, is stored separately as ciphertext, the same
+// way an instance secret is.
+type PlatformRepository interface {
+	GetEmbedderSettings(ctx context.Context) (domain.EmbedderSettings, error)
+	SetEmbedderSettings(ctx context.Context, s domain.EmbedderSettings) error
+
+	GetEmbedderAPIKey(ctx context.Context) (ciphertext []byte, ok bool, err error)
+	SetEmbedderAPIKey(ctx context.Context, ciphertext []byte) error
+	DeleteEmbedderAPIKey(ctx context.Context) error
 }

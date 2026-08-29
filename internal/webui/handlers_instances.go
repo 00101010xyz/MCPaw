@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/00101010xyz/mcpaw/internal/connector"
-	"github.com/00101010xyz/mcpaw/internal/index"
 	"github.com/00101010xyz/mcpaw/internal/service"
 )
 
@@ -67,7 +66,11 @@ func (s *Server) renderNewInstance(w http.ResponseWriter, r *http.Request, statu
 // defaultForm pre-fills the creation form from the connector's own defaults, so
 // the common case is "review and confirm" rather than "look everything up".
 func defaultForm(selected *connector.Entry) *instanceForm {
-	form := &instanceForm{Variables: map[string]string{}, Enabled: true}
+	// Most of the connectors this platform ships with talk to something
+	// running on the operator's own machine or LAN, so private-network
+	// egress is pre-enabled here rather than requiring an extra click on the
+	// common path; it stays a real, editable field under Advanced either way.
+	form := &instanceForm{Variables: map[string]string{}, Enabled: true, AllowPrivateNetwork: true}
 	if selected == nil {
 		return form
 	}
@@ -76,9 +79,6 @@ func defaultForm(selected *connector.Entry) *instanceForm {
 	for _, v := range selected.Compiled.Variables() {
 		form.Variables[v.Name] = v.Default
 	}
-	// Pre-ticking the egress box for a connector that documents it as required
-	// would defeat the purpose of asking, so it stays off and the form explains
-	// why it exists.
 	form.HostHeaderOverride = suggestHostHeaderOverride(selected.Compiled.Manifest.Spec.BaseURL.Default)
 	return form
 }
@@ -177,36 +177,17 @@ func (s *Server) GetInstance(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			s.logger.Warn("reading search index status", "instance_id", detail.Instance.ID, "error", err)
 		} else {
-			apiKeySet, err := s.instances.SecretIsSet(r.Context(), detail.Instance.ID, index.EmbedderAPIKey)
-			if err != nil {
-				s.logger.Warn("checking embedder api key", "instance_id", detail.Instance.ID, "error", err)
-			}
 			data["SearchIndex"] = map[string]any{
-				"Status": status, "ChunkCount": count, "EmbedderAPIKeySet": apiKeySet,
+				"Status": status, "ChunkCount": count,
+				// Shown once the index is actually usable, so the Tools panel
+				// reflects the same synthetic tool an MCP client would see —
+				// it is never part of the connector's own manifest.
+				"ToolName": service.SemanticSearchToolName(), "ToolDescription": service.SemanticSearchToolDescription(),
 			}
 		}
 	}
 	s.render(w, r, http.StatusOK, "instance_detail",
 		s.page(r, detail.Instance.Name, "instances", data))
-}
-
-// PostInstanceEmbedder saves the semantic-search embedder URL and model.
-// It is a separate route from PostInstance because it posts from its own
-// form in the "Semantic search" panel, carrying only these two fields — a
-// shared handler that read every configuration field from the request would
-// see the others as blank and overwrite them.
-func (s *Server) PostInstanceEmbedder(w http.ResponseWriter, r *http.Request) {
-	instanceID := r.PathValue("id")
-	embedderURL := strings.TrimSpace(r.PostFormValue("embedder_url"))
-	embedderModel := strings.TrimSpace(r.PostFormValue("embedder_model"))
-
-	in := service.UpdateInput{EmbedderURL: &embedderURL, EmbedderModel: &embedderModel}
-	if _, err := s.instances.Update(r.Context(), s.actor(r), instanceID, in); err != nil {
-		s.flashError(r, "%s", errorMessage(err))
-	} else {
-		s.flashSuccess(r, "Embedder settings saved.")
-	}
-	redirect(w, r, "/instances/"+instanceID)
 }
 
 // PostInstanceReindex starts a background incremental update of an

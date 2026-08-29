@@ -10,10 +10,9 @@ import (
 	"github.com/00101010xyz/mcpaw/internal/upstream"
 )
 
-// EmbedderAPIKey is the reserved instance secret name used to store the
-// embedder sidecar's API key, when it needs one. It is reserved rather than
-// declared by any connector manifest — see domain.Instance.EmbedderURL for
-// why the embedder configuration lives at the instance level instead.
+// EmbedderAPIKey names the platform secret used to store the embedder
+// sidecar's API key, when it needs one — see domain.EmbedderSettings for why
+// it is a single platform-wide credential rather than a per-instance one.
 const (
 	EmbedderAPIKey  = "embedderApiKey"
 	DefaultEmbedder = "nomic-embed-text"
@@ -24,11 +23,21 @@ const (
 // misconfigured endpoint rather than a legitimate reply.
 const maxEmbedResponseBytes = 16 << 20
 
+// embedderLimiterKey is the single rate-limit bucket every embed call shares:
+// the embedder is one platform-wide sidecar (see domain.EmbedderSettings),
+// not a per-instance upstream, so there is exactly one budget to enforce
+// rather than one per instance.
+const embedderLimiterKey = "embedder"
+
 // Embedder calls a local embedding sidecar over the same SSRF-guarded
 // client every connector call uses, so embedding text is subject to the same
 // egress policy as reaching Zotero itself.
 type Embedder struct {
 	Client *upstream.Client
+	// Limiter enforces the configurable rate limit on embed calls (see
+	// domain.EmbedderSettings.RateLimitPerMin). Nil means unlimited, which
+	// keeps the zero value usable in tests that don't care about throttling.
+	Limiter upstream.Limiter
 }
 
 // embedRequest/embedResponse follow the Ollama /api/embed contract
@@ -47,17 +56,21 @@ type embedResponse struct {
 }
 
 // Embed returns one vector per input text, in order. baseURL, model and
-// policy come from the caller's already-resolved engine.Target so this
-// package never has to know how instance configuration is stored.
-func (e *Embedder) Embed(ctx context.Context, baseURL, model, apiKey string, policy upstream.EgressPolicy, texts []string) ([][]float32, error) {
+// policy come from the caller's already-resolved settings so this package
+// never has to know how they are stored. rateLimitPerMin is enforced through
+// Limiter before the call is made; a non-positive value means unlimited.
+func (e *Embedder) Embed(ctx context.Context, baseURL, model, apiKey string, rateLimitPerMin int, policy upstream.EgressPolicy, texts []string) ([][]float32, error) {
 	if len(texts) == 0 {
 		return nil, nil
 	}
 	if baseURL == "" {
-		return nil, fmt.Errorf("index: no embedder URL is configured for this instance")
+		return nil, fmt.Errorf("index: no embedder URL is configured")
 	}
 	if model == "" {
 		model = DefaultEmbedder
+	}
+	if e.Limiter != nil && !e.Limiter.Allow(embedderLimiterKey, rateLimitPerMin) {
+		return nil, fmt.Errorf("index: %w", upstream.ErrRateLimited)
 	}
 
 	body, err := json.Marshal(embedRequest{Model: model, Input: texts})

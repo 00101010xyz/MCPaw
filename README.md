@@ -32,20 +32,18 @@ Once signed in:
    the Zotero desktop app's local API running on your machine (`compose.yml` already maps
    `host.docker.internal` for you on Linux; Docker Desktop on macOS/Windows resolves it
    automatically).
-2. **Enable private-network egress** on the instance. MCPaw refuses to reach loopback and
-   private-network addresses by default — that's intentional, not a bug, since Zotero's
-   local API lives on your machine's loopback interface. Cloud instance-metadata addresses
-   (`169.254.169.254` and friends) stay blocked regardless.
+2. Under **Advanced**, confirm **private-network egress** is checked (it's pre-checked, since
+   Zotero's local API lives on your machine's loopback interface) and **Host header override**
+   is pre-filled with `127.0.0.1:23119` — **including the port**; `127.0.0.1` alone is a
+   different Host header and Zotero will still reject it. Zotero checks the request's `Host`
+   header as a DNS-rebinding defense and only accepts `127.0.0.1`, `localhost`, or `[::1]` on
+   the exact port it's listening on, rejecting `host.docker.internal` with `400 Bad Request` —
+   this field lets MCPaw connect via `host.docker.internal` (the only address that reaches your
+   host from inside the container) while still presenting a `Host` header Zotero accepts. Cloud
+   instance-metadata addresses (`169.254.169.254` and friends) stay blocked regardless of the
+   egress setting.
 3. Leave the `userId` variable at its default (`0`) — that's what the local API always
    uses. No secret is required for the local API.
-4. Leave **Host header override** at its pre-filled `127.0.0.1:23119` — **including the
-   port**; `127.0.0.1` alone is a different Host header and Zotero will still reject it.
-   Zotero's local API checks the request's `Host` header as a DNS-rebinding defense and
-   only accepts `127.0.0.1`, `localhost`, or `[::1]` on the exact port it's listening on
-   — rejecting anything else, including `host.docker.internal`, with `400 Bad Request`.
-   This field lets MCPaw connect via `host.docker.internal` (the only address that
-   actually reaches your host from inside the container) while still presenting a `Host`
-   header Zotero accepts.
 5. Click **Test connection** to confirm MCPaw can actually reach a running Zotero desktop
    app before handing the endpoint to a client.
 6. **Issue a token** (Tokens → Issue a token), scoped to this one instance rather than to
@@ -119,19 +117,23 @@ An instance of the Zotero, Gitea or Linkding connector can index its content
 — Zotero's PDF and snapshot attachments, a Gitea repository's markdown and
 typst files, or a Linkding bookmark's archived HTML snapshot — and expose a
 `semantic_search` tool that returns short, relevant excerpts instead of
-whole documents. It needs a local embeddings sidecar
-(e.g. [Ollama](https://ollama.com) running an embedding model such as
-`nomic-embed-text`, exposed at `http://host.docker.internal:11434`) — set
-that as the **embedder URL** in the instance's "Semantic search" panel (an
-instance-level setting, separate from the connector's own configuration),
-then use **Build index**. The tool is only advertised to clients once the
-index holds at least one chunk; leaving the embedder URL empty leaves the
-feature off entirely, with no other effect on the instance.
+whole documents.
 
-Once an index exists, **Update index** re-fetches everything but only
-re-embeds a document whose content actually changed, and removes any
-document no longer found upstream — the routine action for keeping an index
-current. **Rebuild from scratch** re-embeds every document regardless,
-which is only needed after changing the embedder model (mixing vectors from
-two models silently breaks search rather than erroring, so switching models
-always requires a rebuild) or to recover from a suspect index.
+The embedder is configured once under **Search**, not per instance: point it
+at a local embeddings sidecar (e.g. [Ollama](https://ollama.com) running
+`nomic-embed-text`, exposed at `http://host.docker.internal:11434`), and
+every indexable instance shares it. Leaving the URL empty leaves semantic
+search off entirely; a per-instance rate limit is also set there, since
+every instance shares the same embedder budget. Build each instance's own
+index from that instance's page — the tool is only advertised to clients
+once its index holds at least one chunk.
+
+**Update index** re-fetches everything but only re-embeds a document whose
+content actually changed, and removes any document no longer found
+upstream — the routine action for keeping an index current. **Rebuild from
+scratch** re-embeds every document regardless, needed after changing the
+embedder model (mixing vectors from two models silently breaks search
+rather than erroring) or to recover from a suspect index. A run's stats line
+also reports documents with no extractable text and documents that failed
+to embed or store, so a misconfigured embedder is visible on the page
+instead of just showing zero chunks written.

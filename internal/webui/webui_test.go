@@ -84,8 +84,8 @@ func newHarness(t *testing.T) *harness {
 		Repo: repos.Instances(), Connectors: connectors, Sealer: sealer, Executor: executor, Audit: audit,
 	})
 	indexer := service.NewIndexer(service.IndexerConfig{
-		Repo: repos.SearchIndex(), Instances: instances, Audit: audit,
-		Embedder: &index.Embedder{Client: executor.Client()}, Logger: logger,
+		Repo: repos.SearchIndex(), Platform: repos.Platform(), Instances: instances, Audit: audit,
+		Embedder: &index.Embedder{Client: executor.Client()}, Sealer: sealer, Logger: logger,
 	})
 
 	srv, err := New(Config{
@@ -154,6 +154,7 @@ func TestEveryPageRendersForAnAuthenticatedAdmin(t *testing.T) {
 		{"tokens", authedRequest(http.MethodGet, "/tokens", admin), h.server.GetTokens},
 		{"audit", authedRequest(http.MethodGet, "/audit", admin), h.server.GetAudit},
 		{"account", authedRequest(http.MethodGet, "/account", admin), h.server.GetAccount},
+		{"settings search", authedRequest(http.MethodGet, "/settings/semantic-search", admin), h.server.GetSettingsSearch},
 	}
 
 	for _, tc := range cases {
@@ -174,22 +175,24 @@ func TestEveryPageRendersForAnAuthenticatedAdmin(t *testing.T) {
 // "set" tag and a Remove button appear) — the branch the base
 // TestEveryPageRendersForAnAuthenticatedAdmin case above never exercises,
 // since it never sets one.
-func TestInstanceDetailRendersWithEmbedderAPIKeySet(t *testing.T) {
+// The shared embedder API key is platform-wide configuration now, rendered
+// on the Search settings page rather than any one instance's page — see
+// domain.EmbedderSettings for why it moved out of the instance.
+func TestSettingsSearchRendersWithAPIKeySet(t *testing.T) {
 	h := newHarness(t)
 	admin := h.createAdmin(t, "admin@example.com")
-	inst := h.createInstance(t, "My Zotero", "zotero-key-set")
 
-	if err := h.instances.SetSecret(context.Background(), service.SystemActor(), inst.ID, index.EmbedderAPIKey, "sk-test-value"); err != nil {
-		t.Fatalf("SetSecret: %v", err)
+	if err := h.indexer.SetEmbedderAPIKey(context.Background(), service.SystemActor(), "sk-test-value"); err != nil {
+		t.Fatalf("SetEmbedderAPIKey: %v", err)
 	}
 
 	rec := httptest.NewRecorder()
-	h.server.GetInstance(rec, instanceDetailRequest(admin, inst.ID))
+	h.server.GetSettingsSearch(rec, authedRequest(http.MethodGet, "/settings/semantic-search", admin))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "embedderApiKey") {
-		t.Fatal("response does not mention embedderApiKey")
+	if !strings.Contains(rec.Body.String(), "tag--ok") {
+		t.Fatal("response does not show the API key as set")
 	}
 }
 
@@ -232,9 +235,12 @@ func TestInstanceDetailRendersAfterAnIndexIsBuilt(t *testing.T) {
 	t.Cleanup(embedder.Close)
 
 	ctx := context.Background()
+	if err := h.indexer.UpdateEmbedderSettings(ctx, service.SystemActor(), embedder.URL, "", 0); err != nil {
+		t.Fatalf("UpdateEmbedderSettings: %v", err)
+	}
 	inst, err := h.instances.Create(ctx, service.SystemActor(), service.CreateInput{
 		Name: "Built Zotero", Slug: "built-zotero", ConnectorID: "zotero-local",
-		BaseURL: zotero.URL, Enabled: true, AllowPrivateNetwork: true, EmbedderURL: embedder.URL,
+		BaseURL: zotero.URL, Enabled: true, AllowPrivateNetwork: true,
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -279,38 +285,48 @@ func TestInstanceDetailRendersAfterAnIndexIsBuilt(t *testing.T) {
 	}
 }
 
-// PostInstanceEmbedder must save only the two embedder fields it carries,
-// leaving every other field (name, base URL, ...) untouched — the bug this
-// guards against is a shared handler blanking fields a partial form never
-// submitted.
-func TestPostInstanceEmbedderLeavesOtherFieldsUntouched(t *testing.T) {
+// PostSettingsSearch saves the platform-wide embedder settings shared by
+// every instance — it must not touch any instance's own configuration, since
+// the whole point of moving this setting out of the instance is that it no
+// longer lives there.
+func TestPostSettingsSearchSavesGlobalSettings(t *testing.T) {
 	h := newHarness(t)
 	admin := h.createAdmin(t, "admin@example.com")
-	inst := h.createInstance(t, "My Zotero", "embedder-partial-update")
+	inst := h.createInstance(t, "My Zotero", "settings-search-instance")
 	originalName := inst.Name
 	originalBaseURL := inst.BaseURL
 
-	form := url.Values{"embedder_url": {"http://host.docker.internal:11434"}, "embedder_model": {"nomic-embed-text"}}
-	req := authedRequest(http.MethodPost, "/instances/"+inst.ID+"/embedder", admin)
+	form := url.Values{
+		"embedder_url": {"http://host.docker.internal:11434"}, "embedder_model": {"nomic-embed-text"},
+		"rate_limit_per_min": {"30"},
+	}
+	req := authedRequest(http.MethodPost, "/settings/semantic-search", admin)
 	req.Body = io.NopCloser(strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.SetPathValue("id", inst.ID)
 
 	rec := httptest.NewRecorder()
-	h.server.PostInstanceEmbedder(rec, req)
+	h.server.PostSettingsSearch(rec, req)
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("status = %d, want a redirect", rec.Code)
+	}
+
+	settings, _, err := h.indexer.EmbedderSettings(context.Background())
+	if err != nil {
+		t.Fatalf("EmbedderSettings: %v", err)
+	}
+	if settings.URL != "http://host.docker.internal:11434" {
+		t.Errorf("URL = %q", settings.URL)
+	}
+	if settings.Model != "nomic-embed-text" {
+		t.Errorf("Model = %q", settings.Model)
+	}
+	if settings.RateLimitPerMin != 30 {
+		t.Errorf("RateLimitPerMin = %d, want 30", settings.RateLimitPerMin)
 	}
 
 	updated, err := h.instances.Get(context.Background(), inst.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
-	}
-	if updated.EmbedderURL != "http://host.docker.internal:11434" {
-		t.Errorf("EmbedderURL = %q", updated.EmbedderURL)
-	}
-	if updated.EmbedderModel != "nomic-embed-text" {
-		t.Errorf("EmbedderModel = %q", updated.EmbedderModel)
 	}
 	if updated.Name != originalName {
 		t.Errorf("Name changed to %q, want untouched %q", updated.Name, originalName)

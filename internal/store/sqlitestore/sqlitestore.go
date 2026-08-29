@@ -47,6 +47,7 @@ type Store struct {
 	tokens     *tokenRepo
 	audit      *auditRepo
 	searchIdx  *searchIndexRepo
+	platform   *platformRepo
 }
 
 // Open connects to (and if necessary creates) the SQLite database at path,
@@ -88,6 +89,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	s.tokens = &tokenRepo{base{read: read, write: write}}
 	s.audit = &auditRepo{base{read: read, write: write}}
 	s.searchIdx = &searchIndexRepo{base{read: read, write: write}}
+	s.platform = &platformRepo{base{read: read, write: write}}
 	return s, nil
 }
 
@@ -132,6 +134,10 @@ func (s *Store) Audit() store.AuditRepository { return s.audit }
 
 // SearchIndex exposes the semantic-search index repository.
 func (s *Store) SearchIndex() store.SearchIndexRepository { return s.searchIdx }
+
+// Platform exposes platform-wide settings (currently just the shared
+// semantic-search embedder configuration).
+func (s *Store) Platform() store.PlatformRepository { return s.platform }
 
 // Ping verifies the database is reachable.
 func (s *Store) Ping(ctx context.Context) error {

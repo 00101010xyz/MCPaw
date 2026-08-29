@@ -113,9 +113,13 @@ type Instance struct {
 
 	Enabled bool
 
-	// AllowPrivateNetwork is the explicit, audited opt-in that permits egress
-	// to loopback and RFC1918-style addresses. It defaults to false and must be
-	// enabled deliberately — the Zotero local API needs it.
+	// AllowPrivateNetwork permits egress to loopback and RFC1918-style
+	// addresses. Cloud instance-metadata addresses (169.254.169.254 and
+	// friends) stay blocked regardless of this setting — most of the
+	// connectors this platform ships with talk to something running on the
+	// operator's own machine or LAN, so the creation form pre-enables this,
+	// but it stays a real, editable field rather than an assumption baked in
+	// silently.
 	AllowPrivateNetwork bool
 
 	// HostHeaderOverride, when set, replaces the outgoing HTTP Host header on
@@ -126,20 +130,6 @@ type Instance struct {
 	// container must reach via a different address (host.docker.internal) that
 	// then gets rejected as the Host header unless overridden here.
 	HostHeaderOverride string
-
-	// EmbedderURL and EmbedderModel configure the semantic-search embedding
-	// sidecar for this instance (see internal/index). They are deliberately
-	// instance-level settings rather than connector variables: which
-	// documents to index and how to embed them is a platform feature layered
-	// on top of a connector, not part of the API the connector describes, so
-	// it must not appear in — or require editing — the manifest. Leaving
-	// EmbedderURL empty leaves semantic search off entirely, with no other
-	// effect on the instance. The API key (if the sidecar needs one) is
-	// stored the same way as any other instance secret, under the reserved
-	// name index.EmbedderAPIKey — reserved rather than connector-declared,
-	// for the same reason.
-	EmbedderURL   string
-	EmbedderModel string
 
 	TimeoutMS        int
 	RateLimitPerMin  int
@@ -207,6 +197,23 @@ type IndexDocument struct {
 	UpdatedAt     time.Time
 }
 
+// EmbedderSettings configures the semantic-search embedding sidecar shared by
+// every instance capable of indexing (see internal/index). It is a single,
+// platform-wide row rather than a per-instance or per-connector setting:
+// which model turns a chunk of text into a vector has nothing to do with
+// which upstream API the text came from, and an operator running more than
+// one indexable instance wants to point them all at the same sidecar without
+// repeating the configuration. Leaving URL empty leaves semantic search off
+// entirely for every instance, with no other effect. The API key (if the
+// sidecar needs one) is stored separately, encrypted the same way an
+// instance secret is.
+type EmbedderSettings struct {
+	URL             string
+	Model           string
+	RateLimitPerMin int
+	UpdatedAt       time.Time
+}
+
 // IndexMeta records which embedder model (and vector dimension) built an
 // instance's current index. An incremental "Update index" run must refuse to
 // proceed if the instance is now configured with a different model or
@@ -270,21 +277,22 @@ type AuditEvent struct {
 // Audit action names. Kept as constants so the set of auditable operations is
 // discoverable and greppable rather than scattered as string literals.
 const (
-	ActionLogin              = "auth.login"
-	ActionLoginFailed        = "auth.login_failed"
-	ActionLogout             = "auth.logout"
-	ActionUserCreate         = "user.create"
-	ActionUserUpdate         = "user.update"
-	ActionInstanceCreate     = "instance.create"
-	ActionInstanceUpdate     = "instance.update"
-	ActionInstanceDelete     = "instance.delete"
-	ActionInstanceSecretSet  = "instance.secret_set"
-	ActionInstanceEgressOpen = "instance.egress_private_enabled"
-	ActionInstanceTest       = "instance.test"
-	ActionConnectorImport    = "connector.import"
-	ActionConnectorDelete    = "connector.delete"
-	ActionTokenCreate        = "token.create"
-	ActionTokenRevoke        = "token.revoke"
-	ActionToolCall           = "tool.call"
-	ActionIndexReindex       = "instance.index_reindex"
+	ActionLogin                  = "auth.login"
+	ActionLoginFailed            = "auth.login_failed"
+	ActionLogout                 = "auth.logout"
+	ActionUserCreate             = "user.create"
+	ActionUserUpdate             = "user.update"
+	ActionInstanceCreate         = "instance.create"
+	ActionInstanceUpdate         = "instance.update"
+	ActionInstanceDelete         = "instance.delete"
+	ActionInstanceSecretSet      = "instance.secret_set"
+	ActionInstanceEgressOpen     = "instance.egress_private_enabled"
+	ActionInstanceTest           = "instance.test"
+	ActionConnectorImport        = "connector.import"
+	ActionConnectorDelete        = "connector.delete"
+	ActionTokenCreate            = "token.create"
+	ActionTokenRevoke            = "token.revoke"
+	ActionToolCall               = "tool.call"
+	ActionIndexReindex           = "instance.index_reindex"
+	ActionPlatformSettingsUpdate = "platform.settings_update"
 )

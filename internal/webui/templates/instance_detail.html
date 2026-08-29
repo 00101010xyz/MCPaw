@@ -50,60 +50,11 @@
 <section class="panel panel--tight">
   <div class="panel__head"><h2>Semantic search</h2></div>
   <p class="lede">
-    Finds passages in this library's PDF and snapshot text by meaning, so an MCP
-    client can pull a few relevant excerpts instead of a whole document. Point the
-    embedder URL below at an embeddings sidecar (Ollama or text-embeddings-inference),
-    then build the index here. This is instance-level configuration, separate from the
-    connector — it only appears to clients once the index holds at least one chunk.
+    Finds passages in this library by meaning, so an MCP client can pull a few relevant
+    excerpts instead of a whole document. The embedder is configured once for every
+    instance under <a href="/settings/semantic-search">Search</a>; build or refresh
+    this instance's own index below.
   </p>
-
-  <form method="post" action="/instances/{{$inst.ID}}/embedder">
-    <input type="hidden" name="csrf_token" value="{{$csrf}}">
-
-    <label for="embedder_url">Embedder URL</label>
-    <input id="embedder_url" name="embedder_url" type="url" value="{{$inst.EmbedderURL}}"
-           placeholder="http://host.docker.internal:11434">
-    <p class="hint">Leave empty to leave semantic search off; every other tool works without it.</p>
-
-    <label for="embedder_model">Embedder model</label>
-    <input id="embedder_model" name="embedder_model" type="text" value="{{$inst.EmbedderModel}}"
-           placeholder="nomic-embed-text">
-
-    <button type="submit" class="btn btn--sm">Save embedder settings</button>
-  </form>
-
-  <div class="table-wrap">
-    <table class="table-stack">
-      <thead><tr><th>Name</th><th>State</th><th>Set value</th></tr></thead>
-      <tbody>
-        <tr>
-          <td data-label="Name">
-            <code>embedderApiKey</code>
-            <p class="hint">Bearer token for the embeddings sidecar, if it requires one. Most local setups (a bare Ollama instance) do not.</p>
-          </td>
-          <td data-label="State">
-            {{if .EmbedderAPIKeySet}}<span class="tag tag--ok">set</span>{{else}}<span class="tag tag--off">empty</span>{{end}}
-          </td>
-          <td data-label="Set value">
-            <form method="post" action="/instances/{{$inst.ID}}/secrets" class="secret-set">
-              <input type="hidden" name="csrf_token" value="{{$csrf}}">
-              <input type="hidden" name="name" value="embedderApiKey">
-              <label class="visually-hidden" for="secret-embedderApiKey">New embedder API key</label>
-              <input id="secret-embedderApiKey" type="password" name="value" autocomplete="new-password" placeholder="New value">
-              <button type="submit" class="btn btn--sm">Save</button>
-            </form>
-            {{if .EmbedderAPIKeySet}}
-            <form method="post" action="/instances/{{$inst.ID}}/secrets/delete" class="inline">
-              <input type="hidden" name="csrf_token" value="{{$csrf}}">
-              <input type="hidden" name="name" value="embedderApiKey">
-              <button type="submit" class="linkbtn linkbtn--danger">Remove</button>
-            </form>
-            {{end}}
-          </td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
 
   <dl class="facts">
     <dt>Indexed chunks</dt><dd>{{.ChunkCount}}</dd>
@@ -118,7 +69,7 @@
     <dt>Last run</dt>
     <dd>
       {{formatTime .Status.FinishedAt}} — {{.Status.ItemsProcessed}} examined,
-      {{.Status.ChunksIndexed}} chunks written{{if .Status.DocumentsSkipped}}, {{.Status.DocumentsSkipped}} unchanged{{end}}{{if .Status.DocumentsPruned}}, {{.Status.DocumentsPruned}} pruned{{end}}
+      {{.Status.ChunksIndexed}} chunks written{{if .Status.DocumentsSkipped}}, {{.Status.DocumentsSkipped}} unchanged{{end}}{{if .Status.DocumentsPruned}}, {{.Status.DocumentsPruned}} pruned{{end}}{{if .Status.DocumentsEmptyText}}, {{.Status.DocumentsEmptyText}} had no text{{end}}{{if .Status.DocumentsFailed}}, {{.Status.DocumentsFailed}} failed{{end}}
     </dd>
     {{end}}
   </dl>
@@ -138,9 +89,9 @@
   </div>
   <p class="hint">
     Update only re-embeds documents whose content changed and removes ones no longer
-    found upstream. Rebuild re-embeds everything regardless — needed after changing
-    the embedder model above, since mixing vectors from two models silently breaks
-    search rather than erroring.
+    found upstream. Rebuild re-embeds everything — needed after changing the embedder
+    model, since mixing vectors from two models silently breaks search rather than
+    erroring.
   </p>
 </section>
 {{end}}
@@ -167,8 +118,14 @@
     <p class="hint">{{.Def.Description}}{{if .Def.Default}} Default <code>{{.Def.Default}}</code>.{{end}}</p>
     {{end}}
 
-    <fieldset>
-      <legend>Limits</legend>
+    <label class="check">
+      <input type="checkbox" name="enabled" {{if $inst.Enabled}}checked{{end}}>
+      Serve this endpoint
+    </label>
+
+    <details class="advanced">
+      <summary>Advanced</summary>
+
       <div class="field-row">
         <div>
           <label for="timeout_ms">Request timeout — ms</label>
@@ -187,43 +144,26 @@
           <input id="max_response_bytes" name="max_response_bytes" type="number" min="1024" value="{{$inst.MaxResponseBytes}}">
         </div>
       </div>
-      <p class="hint">
-        A rate limit of 0 disables throttling. Worst-case memory for this instance is
-        roughly concurrent calls × max response size.
-      </p>
-    </fieldset>
+      <p class="hint">0 disables rate limiting. Memory use is roughly concurrent calls × max response size.</p>
 
-    <fieldset>
-      <legend>Egress</legend>
       <label class="check">
         <input type="checkbox" name="allow_private_network" {{if $inst.AllowPrivateNetwork}}checked{{end}}>
         Allow requests to loopback and private-network addresses
       </label>
       <p class="hint">
-        Required when the API runs on this machine or your LAN — the Zotero desktop app
-        included. Cloud instance-metadata addresses stay blocked regardless.
+        Needed when the API runs on this machine or your LAN. Cloud instance-metadata
+        addresses stay blocked regardless.
       </p>
 
       <label for="host_header_override">Host header override <span class="muted">— optional</span></label>
       <input id="host_header_override" name="host_header_override" type="text"
              value="{{$inst.HostHeaderOverride}}" placeholder="e.g. 127.0.0.1:23119">
       <p class="hint">
-        Include the port, e.g. <code>127.0.0.1:23119</code> — a bare <code>127.0.0.1</code>
-        with no port is a different Host header and may still be rejected. Some local services
-        check the request's <code>Host</code> header as a defense against DNS rebinding and
-        reject anything but a loopback name on the exact port they listen on — Zotero's local
-        API is one. A container reaches such a service through a different address (like
-        <code>host.docker.internal</code>), which then gets rejected as the Host header unless
-        overridden here. Leave empty unless "Test connection" fails with
-        <code>400 Bad Request</code> while a direct <code>curl</code> from the host machine
-        succeeds.
+        Only needed if "Test connection" 400s while a direct <code>curl</code> from the host
+        succeeds — some local services reject any Host header but a loopback name (Zotero's
+        local API is one). Include the port.
       </p>
-    </fieldset>
-
-    <label class="check">
-      <input type="checkbox" name="enabled" {{if $inst.Enabled}}checked{{end}}>
-      Serve this endpoint
-    </label>
+    </details>
 
     <button type="submit" class="btn btn--primary btn--submit">Save configuration</button>
   </form>
@@ -309,6 +249,19 @@
             </form>
           </td>
         </tr>
+      {{end}}
+      {{with $d.SearchIndex}}
+      {{if .ChunkCount}}
+        <tr>
+          <td data-label="Tool">
+            <code>{{.ToolName}}</code>
+            <p class="hint">{{.ToolDescription}}</p>
+          </td>
+          <td data-label="Method"><span class="muted">—</span></td>
+          <td data-label="Behaviour"><span class="tag tag--info">read only</span></td>
+          <td data-label="State"><span class="tag tag--ok">built-in</span></td>
+        </tr>
+      {{end}}
       {{end}}
       </tbody>
     </table>

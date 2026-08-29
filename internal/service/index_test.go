@@ -149,14 +149,17 @@ func fakeEmbedderServer(t *testing.T) *httptest.Server {
 }
 
 // createIndexableZoteroInstance creates an instance pointed at the fake
-// Zotero server, with the fake embedder configured and every tool the
-// indexer needs enabled — the common setup for the Reindex tests below.
+// Zotero server, with the fake embedder configured platform-wide and every
+// tool the indexer needs enabled — the common setup for the Reindex tests
+// below.
 func createIndexableZoteroInstance(t *testing.T, env *testEnv, zoteroURL, embedderURL string) *domain.Instance {
 	t.Helper()
 	ctx := context.Background()
+	if err := env.Indexer.UpdateEmbedderSettings(ctx, systemActor(), embedderURL, "", 0); err != nil {
+		t.Fatalf("UpdateEmbedderSettings: %v", err)
+	}
 	in := zoteroCreateInput("indexable")
 	in.BaseURL = zoteroURL
-	in.EmbedderURL = embedderURL
 	inst, err := env.Instances.Create(ctx, systemActor(), in)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -237,6 +240,9 @@ func TestIndexerReindexEndToEndGitea(t *testing.T) {
 	gitea := fakeGiteaServer(t)
 	embedder := fakeEmbedderServer(t)
 	ctx := context.Background()
+	if err := env.Indexer.UpdateEmbedderSettings(ctx, systemActor(), embedder.URL, "", 0); err != nil {
+		t.Fatalf("UpdateEmbedderSettings: %v", err)
+	}
 
 	in := CreateInput{
 		Name: "My Thesis", Slug: "my-thesis", ConnectorID: "gitea",
@@ -244,7 +250,6 @@ func TestIndexerReindexEndToEndGitea(t *testing.T) {
 		Variables:           map[string]string{"owner": "octocat", "repo": "thesis", "ref": "main"},
 		Enabled:             true,
 		AllowPrivateNetwork: true,
-		EmbedderURL:         embedder.URL,
 	}
 	inst, err := env.Instances.Create(ctx, systemActor(), in)
 	if err != nil {
@@ -323,13 +328,15 @@ func TestIndexerReindexEndToEndLinkding(t *testing.T) {
 	linkding := fakeLinkdingServer(t)
 	embedder := fakeEmbedderServer(t)
 	ctx := context.Background()
+	if err := env.Indexer.UpdateEmbedderSettings(ctx, systemActor(), embedder.URL, "", 0); err != nil {
+		t.Fatalf("UpdateEmbedderSettings: %v", err)
+	}
 
 	in := CreateInput{
 		Name: "My Bookmarks", Slug: "my-bookmarks", ConnectorID: "linkding",
 		BaseURL:             linkding.URL,
 		Enabled:             true,
 		AllowPrivateNetwork: true,
-		EmbedderURL:         embedder.URL,
 	}
 	inst, err := env.Instances.Create(ctx, systemActor(), in)
 	if err != nil {
@@ -384,6 +391,9 @@ func TestIndexerReindexEndToEndLinkding(t *testing.T) {
 func createIndexableGiteaInstance(t *testing.T, env *testEnv, giteaURL, embedderURL string) *domain.Instance {
 	t.Helper()
 	ctx := context.Background()
+	if err := env.Indexer.UpdateEmbedderSettings(ctx, systemActor(), embedderURL, "", 0); err != nil {
+		t.Fatalf("UpdateEmbedderSettings: %v", err)
+	}
 	in := CreateInput{
 		// Each test gets its own isolated env/database (see newTestEnv), so
 		// a constant slug is fine — nothing else in the same test process
@@ -393,7 +403,6 @@ func createIndexableGiteaInstance(t *testing.T, env *testEnv, giteaURL, embedder
 		Variables:           map[string]string{"owner": "octocat", "repo": "thesis", "ref": "main"},
 		Enabled:             true,
 		AllowPrivateNetwork: true,
-		EmbedderURL:         embedderURL,
 	}
 	inst, err := env.Instances.Create(ctx, systemActor(), in)
 	if err != nil {
@@ -622,8 +631,8 @@ func TestIndexerUpdateRefusesAfterEmbedderModelChanges(t *testing.T) {
 	}
 
 	newModel := "a-different-embedding-model"
-	if _, err := env.Instances.Update(ctx, systemActor(), inst.ID, UpdateInput{EmbedderModel: &newModel}); err != nil {
-		t.Fatalf("Update (change model): %v", err)
+	if err := env.Indexer.UpdateEmbedderSettings(ctx, systemActor(), embedder.URL, newModel, 0); err != nil {
+		t.Fatalf("UpdateEmbedderSettings (change model): %v", err)
 	}
 
 	if err := env.Indexer.Reindex(ctx, systemActor(), inst.ID, ReindexUpdate); err != nil {
@@ -770,9 +779,11 @@ func TestIndexerReindexRequiresEnabledTools(t *testing.T) {
 	embedder := fakeEmbedderServer(t)
 	ctx := context.Background()
 
+	if err := env.Indexer.UpdateEmbedderSettings(ctx, systemActor(), embedder.URL, "", 0); err != nil {
+		t.Fatalf("UpdateEmbedderSettings: %v", err)
+	}
 	in := zoteroCreateInput("tools-disabled")
 	in.BaseURL = zotero.URL
-	in.EmbedderURL = embedder.URL
 	inst, err := env.Instances.Create(ctx, systemActor(), in)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -810,8 +821,10 @@ func TestIndexerSearchOnEmptyIndexReturnsNoHitsNotError(t *testing.T) {
 	embedder := fakeEmbedderServer(t)
 	ctx := context.Background()
 
+	if err := env.Indexer.UpdateEmbedderSettings(ctx, systemActor(), embedder.URL, "", 0); err != nil {
+		t.Fatalf("UpdateEmbedderSettings: %v", err)
+	}
 	in := zoteroCreateInput("search-empty-index")
-	in.EmbedderURL = embedder.URL
 	inst, err := env.Instances.Create(ctx, systemActor(), in)
 	if err != nil {
 		t.Fatalf("Create: %v", err)

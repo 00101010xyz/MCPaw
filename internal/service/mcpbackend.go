@@ -249,6 +249,15 @@ func toCallResult(tool *connector.CompiledTool, r *engine.Result) *mcp.CallToolR
 // library, a Gitea repository, or something added later.
 const semanticSearchToolName = "semantic_search"
 
+// SemanticSearchToolName and SemanticSearchToolDescription expose the
+// synthetic tool's name and description to the web UI, so an instance's
+// Tools listing can show it as one of "this instance's tools" once the
+// index is ready — it is never part of connector.Compiled.Tools, since it
+// is built entirely here rather than declared by any manifest.
+func SemanticSearchToolName() string { return semanticSearchToolName }
+
+func SemanticSearchToolDescription() string { return semanticSearchTool().Description }
+
 var semanticSearchReadOnly = true
 
 func semanticSearchTool() mcp.Tool {

@@ -111,7 +111,7 @@ func New(cfg Config) (*Server, error) {
 // template referencing a block it does not have fails at startup.
 var pageNames = []string{
 	"login", "setup", "account", "instances", "instance_new",
-	"instance_detail", "connectors", "tokens", "audit",
+	"instance_detail", "connectors", "tokens", "audit", "settings_search",
 }
 
 func parsePages() (map[string]*template.Template, error) {
@@ -226,6 +226,7 @@ func (s *Server) buildPalette(ctx context.Context) []paletteItem {
 		{First: true, Group: "Sections", Label: "Instances", Search: "instances home", Href: "/"},
 		{Group: "Sections", Label: "New instance", Search: "new instance create", Href: "/instances/new"},
 		{Group: "Sections", Label: "Connectors", Search: "connectors import manifest", Href: "/connectors"},
+		{Group: "Sections", Label: "Semantic search", Search: "semantic search embedder settings", Href: "/settings/semantic-search"},
 		{Group: "Sections", Label: "Tokens", Search: "tokens access bearer", Href: "/tokens"},
 		{Group: "Sections", Label: "Audit log", Search: "audit log events", Href: "/audit"},
 		{Group: "Sections", Label: "Account", Search: "account password", Href: "/account"},

@@ -17,14 +17,6 @@ Then open <http://localhost:8080>. On first run you'll land on `/setup` to creat
 administrator account — that form is only reachable until the first administrator exists,
 after which it is closed permanently.
 
-> **Upgrading from an image built before the `/data` ownership fix?** An earlier version
-> of the `Dockerfile` didn't pre-create `/data` with the right ownership, so Docker
-> materialized the named volume as `root`-owned and the container failed with
-> `permission denied` writing `master.key`. Rebuilding the image alone won't fix an
-> already-created volume — run `docker compose down -v` first (this deletes the named
-> volume, so only do it if you have nothing in it worth keeping yet) and then
-> `docker compose up --build` again.
-
 Once signed in, **create an instance** (pick a built-in connector — Zotero, Gitea or
 Linkding). The base URL, egress and Host header override are pre-filled with sensible
 defaults for each; expand **Advanced** to review or change them. Creating an instance

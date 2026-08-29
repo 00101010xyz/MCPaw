@@ -207,6 +207,11 @@ func mountWebUI(mux *http.ServeMux, deps Deps) {
 	mux.Handle("POST /tokens", admin(ui.PostTokens))
 	mux.Handle("POST /tokens/{id}/revoke", admin(ui.PostRevokeToken))
 
+	mux.Handle("GET /usage", private(ui.GetUsage))
+	mux.Handle("POST /usage/clear", admin(ui.PostUsageClear))
+	mux.Handle("GET /settings/usage", private(ui.GetSettingsUsage))
+	mux.Handle("POST /settings/usage", admin(ui.PostSettingsUsage))
+
 	mux.Handle("GET /audit", private(ui.GetAudit))
 	mux.Handle("GET /account", private(ui.GetAccount))
 	mux.Handle("POST /account/password", private(ui.PostChangePassword))

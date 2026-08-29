@@ -1,0 +1,80 @@
+{{define "content"}}
+{{$d := .Data}}
+{{$csrf := .CSRF}}
+<div class="page-head">
+  <div>
+    <h1>Usage log</h1>
+    <p class="lede">
+      Every MCP tool call, recorded at the level configured in
+      <a href="/settings/usage">Usage log settings</a> — currently
+      <strong>{{$d.Level}}</strong>. The log is capped by size, oldest entries dropped
+      first; it is not the security audit trail (see <a href="/audit">Audit log</a>),
+      which keeps administrative actions regardless of this setting.
+    </p>
+  </div>
+</div>
+
+<form method="get" action="/usage" class="panel panel--tight filter">
+  <div>
+    <label for="instance">Instance</label>
+    <select id="instance" name="instance">
+      <option value="">Every instance</option>
+      {{range $d.Instances}}
+        <option value="{{.Instance.ID}}"{{if eq .Instance.ID $d.SelectedInstance}} selected{{end}}>{{.Instance.Name}}</option>
+      {{end}}
+    </select>
+  </div>
+  <div>
+    <label for="tool">Tool</label>
+    <input id="tool" name="tool" type="text" value="{{$d.SelectedTool}}" placeholder="e.g. semantic_search" maxlength="128">
+  </div>
+  <button type="submit" class="btn">Filter</button>
+</form>
+
+<section class="panel panel--tight">
+  <div class="panel__head">
+    <h2>Recent calls</h2>
+    {{if $d.Entries}}
+    <form method="post" action="/usage/clear" class="inline">
+      <input type="hidden" name="csrf_token" value="{{$csrf}}">
+      <button type="submit" class="linkbtn linkbtn--danger">Clear log</button>
+    </form>
+    {{end}}
+  </div>
+  {{if not $d.Entries}}
+  <p class="muted">
+    {{if eq $d.Level "off"}}Usage logging is turned off.{{else}}No matching calls yet.{{end}}
+  </p>
+  {{else}}
+  <div class="table-wrap">
+    <table class="table-stack">
+      <thead><tr><th>When</th><th>Instance</th><th>Tool</th><th>Caller</th><th>Result</th><th>Duration</th></tr></thead>
+      <tbody>
+      {{range $d.Entries}}
+        <tr>
+          <td data-label="When" class="muted nowrap mono">{{formatTime .At}}</td>
+          <td data-label="Instance">{{.InstanceName}}</td>
+          <td data-label="Tool"><code>{{.Tool}}</code></td>
+          <td data-label="Caller" class="muted">{{.ActorType}}{{if .ActorID}} {{.ActorID}}{{end}}</td>
+          <td data-label="Result">
+            {{if .Success}}<span class="tag tag--ok">{{.StatusCode}}</span>
+            {{else}}<span class="tag tag--warn">{{.Kind}}</span>{{end}}
+          </td>
+          <td data-label="Duration" class="muted nowrap">{{.DurationMs}} ms</td>
+        </tr>
+        {{if or .Args .Result .Error}}
+        <tr class="row-detail">
+          <td colspan="6" class="cell-detail">
+            {{if .Args}}<div><span class="muted">args:</span> <code>{{.Args}}</code></div>{{end}}
+            {{if .Result}}<div><span class="muted">result:</span> <code>{{.Result}}</code></div>{{end}}
+            {{if .Error}}<div><span class="muted">error:</span> <code>{{.Error}}</code></div>{{end}}
+          </td>
+        </tr>
+        {{end}}
+      {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{end}}
+</section>
+{{end}}

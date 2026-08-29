@@ -176,7 +176,7 @@ func (e *Executor) Execute(
 		return nil, classifyTransportError(err)
 	}
 
-	result, mapErr := mapResponse(tool, resp)
+	result, mapErr := mapResponse(tool, resp, args)
 	// A 5xx or a transport-level problem means the upstream is unhealthy. A 4xx
 	// means *this call* was wrong, which says nothing about upstream health and
 	// must not be allowed to trip the breaker for everyone else.

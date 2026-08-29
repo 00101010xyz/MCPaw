@@ -29,6 +29,7 @@ import (
 	"github.com/00101010xyz/mcpaw/internal/service"
 	"github.com/00101010xyz/mcpaw/internal/store/sqlitestore"
 	"github.com/00101010xyz/mcpaw/internal/upstream"
+	"github.com/00101010xyz/mcpaw/internal/usage"
 	"github.com/00101010xyz/mcpaw/internal/webui"
 )
 
@@ -92,6 +93,19 @@ func runServe(args []string) error {
 		}
 	}()
 
+	// usage.db is deliberately a separate file from mcpaw.db (see
+	// internal/usage's package doc): its own size cap and rotation must never
+	// be able to affect the platform's own data.
+	usageStore, err := usage.Open(ctx, filepath.Join(cfg.DataDir, "usage.db"))
+	if err != nil {
+		return fmt.Errorf("opening usage log database: %w", err)
+	}
+	defer func() {
+		if err := usageStore.Close(); err != nil {
+			logger.Error("closing usage log database", slog.String("error", err.Error()))
+		}
+	}()
+
 	// --- Application services -------------------------------------------------
 	audit := service.NewAudit(repos.Audit(), logger)
 
@@ -125,7 +139,8 @@ func runServe(args []string) error {
 		Repo: repos.SearchIndex(), Platform: repos.Platform(), Instances: instances, Audit: audit,
 		Embedder: &index.Embedder{Client: executor.Client(), Limiter: limiter}, Sealer: sealer, Logger: logger,
 	})
-	mcpBackend := service.NewMCPBackend(instances, indexer, audit, version, logger)
+	usageSvc := service.NewUsage(usageStore, audit, logger)
+	mcpBackend := service.NewMCPBackend(instances, indexer, usageSvc, audit, version, logger)
 
 	// --- MCP protocol server ---------------------------------------------------
 	mcpSessions := mcp.NewSessionStore(mcp.SessionConfig{})
@@ -141,7 +156,7 @@ func runServe(args []string) error {
 	// --- Web UI and HTTP surface ------------------------------------------------
 	webUI, err := webui.New(webui.Config{
 		Users: users, Sessions: sessions, Instances: instances, Connectors: connectors,
-		Tokens: tokens, Audit: audit, Indexer: indexer, Logger: logger,
+		Tokens: tokens, Audit: audit, Indexer: indexer, Usage: usageSvc, Logger: logger,
 		PublicURL: cfg.PublicURL, Version: version, SecureCookies: cfg.SecureCookies,
 		SessionMaxAge: cfg.SessionAbsoluteTimeout,
 		LoginLimiter:  httpx.NewAttemptLimiter(cfg.LoginRateLimitPerMin, time.Minute),
@@ -168,7 +183,7 @@ func runServe(args []string) error {
 		IdleTimeout:       cfg.IdleTimeout,
 	}
 
-	go pruneLoop(ctx, logger, sessions, audit)
+	go pruneLoop(ctx, logger, sessions, audit, usageSvc)
 
 	serveErr := make(chan error, 1)
 	go func() {
@@ -199,10 +214,11 @@ func runServe(args []string) error {
 	return nil
 }
 
-// pruneLoop periodically clears expired web sessions and ages out old audit
-// events. Nothing else in the process calls these; without this loop the
-// sessions and audit_log tables would grow without bound.
-func pruneLoop(ctx context.Context, logger *slog.Logger, sessions *service.Sessions, audit *service.Audit) {
+// pruneLoop periodically clears expired web sessions, ages out old audit
+// events, and enforces the usage log's size cap. Nothing else in the process
+// calls these; without this loop the sessions and audit_log tables would grow
+// without bound, and the usage log would grow past its configured cap.
+func pruneLoop(ctx context.Context, logger *slog.Logger, sessions *service.Sessions, audit *service.Audit, usage *service.Usage) {
 	ticker := time.NewTicker(pruneInterval)
 	defer ticker.Stop()
 	for {
@@ -219,6 +235,11 @@ func pruneLoop(ctx context.Context, logger *slog.Logger, sessions *service.Sessi
 				logger.Warn("pruning old audit events", slog.String("error", err.Error()))
 			} else if n > 0 {
 				logger.Debug("pruned old audit events", slog.Int64("count", n))
+			}
+			if n, err := usage.Prune(ctx); err != nil {
+				logger.Warn("pruning usage log", slog.String("error", err.Error()))
+			} else if n > 0 {
+				logger.Debug("pruned usage log entries", slog.Int64("count", n))
 			}
 		}
 	}

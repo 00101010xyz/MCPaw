@@ -13,7 +13,7 @@
   <input type="hidden" name="csrf_token" value="{{.CSRF}}">
 
   <label for="connector_id">Connector</label>
-  <select id="connector_id" name="connector_id" required onchange="this.form.submit()">
+  <select id="connector_id" name="connector_id" required data-autosubmit>
     {{range $d.Connectors}}
       <option value="{{.Record.ID}}"{{if eq .Record.ID $d.SelectedConnector}} selected{{end}}>{{.Record.Name}} — {{len .Compiled.Tools}} tools</option>
     {{end}}

@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"mime"
@@ -33,8 +34,9 @@ type Result struct {
 const maxTextBytes = 512 * 1024
 
 // mapResponse converts an upstream response into a Result, or into an *Error
-// when the status is not a success.
-func mapResponse(tool *connector.CompiledTool, resp *upstream.Response) (*Result, error) {
+// when the status is not a success. args is the tool call's own arguments —
+// needed only when the tool paginates its response (see paginateText).
+func mapResponse(tool *connector.CompiledTool, resp *upstream.Response, args map[string]any) (*Result, error) {
 	headers := selectHeaders(tool.IncludeHeaders, resp.Header)
 
 	if !isSuccess(tool, resp.StatusCode) {
@@ -69,9 +71,12 @@ func mapResponse(tool *connector.CompiledTool, resp *upstream.Response) (*Result
 			// failure.
 			result.Text = truncate(string(resp.Body), maxTextBytes) +
 				"\n\n[truncated: the response exceeded this instance's size limit]"
-		} else {
-			result.Text = truncate(string(resp.Body), maxTextBytes)
+			return result, nil
 		}
+		if tool.Paginate {
+			return paginatedResult(result, string(resp.Body), args)
+		}
+		result.Text = truncate(string(resp.Body), maxTextBytes)
 		return result, nil
 	}
 
@@ -100,6 +105,28 @@ func mapResponse(tool *connector.CompiledTool, resp *upstream.Response) (*Result
 	if err != nil {
 		return nil, err
 	}
+
+	if tool.DecodeBase64 {
+		s, ok := projected.(string)
+		if !ok {
+			return nil, newError(KindInternal, "response.decodeBase64 is set but the selected value is not a string", nil)
+		}
+		decoded, err := base64.StdEncoding.DecodeString(strings.Join(strings.Fields(s), ""))
+		if err != nil {
+			return nil, &Error{Kind: KindUpstreamFailure, StatusCode: resp.StatusCode,
+				Message: "the upstream field selected for decoding is not valid base64"}
+		}
+		projected = string(decoded)
+	}
+
+	if tool.Paginate {
+		s, ok := projected.(string)
+		if !ok {
+			return nil, newError(KindInternal, "response.paginate is set but the selected value is not a string", nil)
+		}
+		return paginatedResult(result, s, args)
+	}
+
 	result.Data = projected
 	result.IsJSON = true
 
@@ -109,6 +136,91 @@ func mapResponse(tool *connector.CompiledTool, resp *upstream.Response) (*Result
 	}
 	result.Text = truncate(string(pretty), maxTextBytes)
 	return result, nil
+}
+
+// defaultPageChars and maxPageChars bound how much text one paginated call
+// returns: enough to be useful without another round trip for a short
+// document, small enough that a handful of calls can't reproduce the same
+// "blew the whole context" problem pagination exists to avoid.
+const (
+	defaultPageChars = 4000
+	maxPageChars     = 20000
+)
+
+// pageResult is a paginated tool's response shape — the same envelope
+// whether the underlying value came from a plain-text body or a selected
+// JSON string field, so a client learns the pattern once.
+type pageResult struct {
+	Text        string `json:"text"`
+	Offset      int    `json:"offset"`
+	Length      int    `json:"length"`
+	TotalLength int    `json:"total_length"`
+	NextOffset  int    `json:"next_offset"`
+	HasMore     bool   `json:"has_more"`
+}
+
+// paginateText slices s by the caller's own input.offset/input.limit
+// (character offsets, not bytes, so a slice never lands inside a multi-byte
+// rune). Both are optional and independently defaulted/clamped, so an
+// out-of-range or missing value degrades to a sensible page rather than an
+// error.
+func paginateText(s string, args map[string]any) pageResult {
+	runes := []rune(s)
+	total := len(runes)
+
+	offset := intArg(args, "offset", 0)
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > total {
+		offset = total
+	}
+
+	limit := intArg(args, "limit", defaultPageChars)
+	if limit <= 0 {
+		limit = defaultPageChars
+	}
+	if limit > maxPageChars {
+		limit = maxPageChars
+	}
+
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	return pageResult{
+		Text: string(runes[offset:end]), Offset: offset, Length: end - offset,
+		TotalLength: total, NextOffset: end, HasMore: end < total,
+	}
+}
+
+func paginatedResult(result *Result, text string, args map[string]any) (*Result, error) {
+	page := paginateText(text, args)
+	result.Data = page
+	result.IsJSON = true
+	pretty, err := json.MarshalIndent(page, "", "  ")
+	if err != nil {
+		return nil, newError(KindInternal, "could not render the paginated response", err)
+	}
+	result.Text = string(pretty)
+	return result, nil
+}
+
+// intArg reads an integer-ish tool argument. Arguments arrive as decoded
+// JSON, where every number is a float64, but an int is accepted too so
+// callers constructing args programmatically (tests, other Go code) are not
+// forced through the JSON round trip just to pass a number.
+func intArg(args map[string]any, key string, def int) int {
+	switch v := args[key].(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	case int64:
+		return int(v)
+	default:
+		return def
+	}
 }
 
 func isSuccess(tool *connector.CompiledTool, status int) bool {

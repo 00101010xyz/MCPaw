@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -36,6 +37,7 @@ func ResolvedFrom(ctx context.Context) (*Resolved, bool) {
 type MCPBackend struct {
 	instances *Instances
 	indexer   *Indexer
+	usage     *Usage
 	audit     *Audit
 	version   string
 	logger    *slog.Logger
@@ -43,15 +45,16 @@ type MCPBackend struct {
 
 // NewMCPBackend constructs the adapter. indexer may be nil, in which case
 // semantic search is never advertised or callable — the feature is purely
-// additive and its absence changes nothing else about a connector.
-func NewMCPBackend(instances *Instances, indexer *Indexer, audit *Audit, version string, logger *slog.Logger) *MCPBackend {
+// additive and its absence changes nothing else about a connector. usage may
+// likewise be nil, in which case no usage log is kept.
+func NewMCPBackend(instances *Instances, indexer *Indexer, usage *Usage, audit *Audit, version string, logger *slog.Logger) *MCPBackend {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	if version == "" {
 		version = "dev"
 	}
-	return &MCPBackend{instances: instances, indexer: indexer, audit: audit, version: version, logger: logger}
+	return &MCPBackend{instances: instances, indexer: indexer, usage: usage, audit: audit, version: version, logger: logger}
 }
 
 var _ mcp.Backend = (*MCPBackend)(nil)
@@ -170,7 +173,12 @@ func (b *MCPBackend) CallTool(ctx context.Context, instanceID, name string, args
 		if !b.semanticSearchReady(ctx, resolved) {
 			return nil, fmt.Errorf("tool %q: %w", name, domain.ErrNotFound)
 		}
-		return b.callSemanticSearch(ctx, resolved, args), nil
+		started := time.Now()
+		result := b.callSemanticSearch(ctx, resolved, args)
+		actor := Actor{Type: ActorToken, ID: tokenIDFrom(ctx), IP: clientIPFrom(ctx)}
+		b.usage.Record(ctx, actor, resolved, name, args,
+			&engine.Result{Text: resultText(result)}, semanticSearchErr(result), time.Since(started))
+		return result, nil
 	}
 	// A disabled tool must be indistinguishable from one that does not exist:
 	// otherwise the error message enumerates what an operator chose to hide.
@@ -192,6 +200,7 @@ func (b *MCPBackend) CallTool(ctx context.Context, instanceID, name string, args
 	elapsed := time.Since(started)
 
 	actor := Actor{Type: ActorToken, ID: tokenIDFrom(ctx), IP: clientIPFrom(ctx)}
+	b.usage.Record(ctx, actor, resolved, name, args, result, execErr, elapsed)
 	if execErr != nil {
 		return b.failure(ctx, actor, resolved, name, elapsed, execErr), nil
 	}
@@ -202,6 +211,27 @@ func (b *MCPBackend) CallTool(ctx context.Context, instanceID, name string, args
 		"tool": name, "status": result.StatusCode, "duration_ms": elapsed.Milliseconds(),
 	})
 	return toCallResult(tool, result), nil
+}
+
+// resultText renders a CallToolResult's content as plain text, for the usage
+// log's "full" level — the same rendering an MCP client itself would see,
+// rather than a second, differently-shaped copy of the search hits.
+func resultText(r *mcp.CallToolResult) string {
+	var sb strings.Builder
+	for _, c := range r.Content {
+		sb.WriteString(c.Text)
+	}
+	return sb.String()
+}
+
+// semanticSearchErr turns an error-flagged CallToolResult back into an error,
+// so the usage log records a semantic-search failure the same way it records
+// any other failed call.
+func semanticSearchErr(r *mcp.CallToolResult) error {
+	if !r.IsError {
+		return nil
+	}
+	return errors.New(resultText(r))
 }
 
 // failure converts an execution error into a tool result the model can read and

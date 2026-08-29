@@ -3,7 +3,7 @@ kind: Connector
 metadata:
   id: zotero-local
   name: Zotero (Local API)
-  version: 1.3.0
+  version: 1.4.0
   description: >-
     Read-only access to a Zotero library through the HTTP API that the Zotero
     desktop application exposes on the local machine. The same manifest also
@@ -227,16 +227,16 @@ spec:
         includeHeaders: [Total-Results]
 
     - name: zotero_get_item_fulltext
-      title: Get extracted full text
+      title: Get extracted full text (whole document)
       description: >-
         Fetch the ENTIRE text Zotero has extracted and indexed from a PDF or
-        snapshot attachment — the same text its full-text search runs
-        against. This can be tens of thousands of words; fetching it just to
-        look for something specific is expensive and usually the wrong tool.
-        If zotero_semantic_search is available, use it first to find the
-        relevant passages — reach for this tool only when you actually need
-        the complete document, e.g. to summarize it in full. Pass the
-        attachment's own item key, not its parent's (use
+        snapshot attachment in one call — the same text its full-text search
+        runs against. This can be tens of thousands of words and consume a
+        model's entire context; prefer zotero_read_item_fulltext, which
+        returns it a bounded page at a time, or (better still)
+        zotero_semantic_search to find just the relevant passages. Reach for
+        this tool only when the complete document is genuinely needed at
+        once. Pass the attachment's own item key, not its parent's (use
         zotero_get_item_children to find it).
       annotations:
         readOnlyHint: true
@@ -257,6 +257,49 @@ spec:
         successCodes: [200]
         format: json
 
+    - name: zotero_read_item_fulltext
+      title: Read extracted full text, a page at a time
+      description: >-
+        Read the text Zotero extracted from a PDF or snapshot attachment,
+        one bounded page at a time — the preferred way to read it over
+        zotero_get_item_fulltext, which returns the whole document (often
+        tens of thousands of words) in one call. If zotero_semantic_search
+        is available, prefer that first to find the relevant passages
+        directly rather than reading page by page. Starts at offset 0 by
+        default; when the response's has_more is true, call again with
+        offset set to its next_offset to continue. Pass the attachment's
+        own item key, not its parent's.
+      annotations:
+        readOnlyHint: true
+        openWorldHint: false
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required: [itemKey]
+        properties:
+          itemKey:
+            type: string
+            description: Eight character key of the attachment item.
+            pattern: '^[A-Z0-9]{8}$'
+          offset:
+            type: integer
+            description: Character offset to start reading from. Defaults to 0.
+            minimum: 0
+          limit:
+            type: integer
+            description: Maximum characters to return. Defaults to 4000, capped at 20000.
+            minimum: 1
+            maximum: 20000
+      request:
+        method: GET
+        path: /api/users/{{vars.userId}}/items/{{input.itemKey}}/fulltext
+      response:
+        successCodes: [200]
+        format: json
+        select: content
+        paginate: true
+        structured: true
+
     - name: zotero_get_item_annotations
       title: Get item annotations
       description: >-
@@ -264,7 +307,9 @@ spec:
         made on an item's attachments, with their text, comments, colors and
         page position — the same annotations shown in Zotero's PDF reader
         sidebar. Pass the parent item's key; annotations are read from all of
-        its attachments' children.
+        its attachments' children. An item with many annotations may have
+        more than one page's worth — check the Total-Results response
+        header against limit+start to know whether to page further.
       annotations:
         readOnlyHint: true
         openWorldHint: false
@@ -278,14 +323,20 @@ spec:
             pattern: '^[A-Z0-9]{8}$'
           limit:
             type: integer
+            description: Maximum annotations to return. Defaults to 50.
             minimum: 1
             maximum: 100
+          start:
+            type: integer
+            description: Zero-based offset for paging through results.
+            minimum: 0
       request:
         method: GET
         path: /api/users/{{vars.userId}}/items/{{input.itemKey}}/children
         query:
           itemType: annotation
           limit: "{{input.limit|default:50}}"
+          start: "{{input.start|default:0}}"
           format: json
           include: data
       response:

@@ -38,20 +38,4 @@
   </article>
   {{end}}
 </div>
-
-<section class="panel panel--roomy">
-  <div class="panel__head"><h2>Import a manifest</h2></div>
-  <p class="lede">
-    Paste YAML. It is fully validated before it is stored — every template reference,
-    JSON Schema and request definition must be correct, so a manifest that would fail
-    at call time is rejected here instead.
-  </p>
-  <form method="post" action="/connectors/import">
-    <input type="hidden" name="csrf_token" value="{{$csrf}}">
-    <label for="manifest">Manifest — YAML</label>
-    <textarea id="manifest" name="manifest" rows="16" spellcheck="false"
-              placeholder="apiVersion: mcpaw.dev/v1&#10;kind: Connector&#10;metadata:&#10;  id: my-api"></textarea>
-    <button type="submit" class="btn btn--primary btn--submit">Validate and import</button>
-  </form>
-</section>
 {{end}}

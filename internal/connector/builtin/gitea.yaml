@@ -3,7 +3,7 @@ kind: Connector
 metadata:
   id: gitea
   name: Gitea
-  version: 2.0.0
+  version: 2.1.0
   description: >-
     Read-only access to Gitea repositories — self-hosted or gitea.com. Lets
     an MCP client browse a repository's file tree and read file contents;
@@ -176,12 +176,15 @@ spec:
         format: json
 
     - name: gitea_get_file
-      title: Get file contents
+      title: Get raw file contents
       description: >-
-        Fetch one file's content by blob SHA — get the SHA for a path from
-        gitea_list_tree's file listing first. The response's "content"
-        field is base64-encoded (Gitea's own git-blob format); decode it to
-        get the file's text. Not meant for binary files.
+        Fetch one whole file's content by blob SHA in a single call, still
+        base64-encoded (Gitea's own git-blob format) — for reading a file's
+        text, prefer gitea_read_file instead, which decodes it and returns
+        it a page at a time so a large file cannot consume a model's whole
+        context in one call. This tool exists for the rarer case of needing
+        the complete encoded blob at once. Get the SHA for a path from
+        gitea_list_tree's file listing first.
       annotations:
         readOnlyHint: true
         openWorldHint: false
@@ -208,4 +211,55 @@ spec:
       response:
         successCodes: [200]
         format: json
+        maxBytes: 4194304
+
+    - name: gitea_read_file
+      title: Read file contents, a page at a time
+      description: >-
+        Read one file's decoded text content, one bounded page at a time —
+        the preferred way to read a file: gitea_get_file returns the whole,
+        still-encoded blob in one call, which for anything but a small file
+        risks consuming a model's entire context. Starts at offset 0 by
+        default; when the response's has_more is true, call again with
+        offset set to its next_offset to continue. Not meant for binary
+        files — expect unreadable text for those.
+      annotations:
+        readOnlyHint: true
+        openWorldHint: false
+      inputSchema:
+        type: object
+        additionalProperties: false
+        required: [owner, repo, sha]
+        properties:
+          owner:
+            type: string
+            description: Repository owner — a user or organisation name.
+            pattern: '^[\w.-]{1,255}$'
+          repo:
+            type: string
+            description: Repository name.
+            pattern: '^[\w.-]{1,255}$'
+          sha:
+            type: string
+            description: Blob SHA, from gitea_list_tree's "sha" field for the desired path.
+            pattern: '^[0-9a-fA-F]{4,64}$'
+          offset:
+            type: integer
+            description: Character offset to start reading from. Defaults to 0.
+            minimum: 0
+          limit:
+            type: integer
+            description: Maximum characters to return. Defaults to 4000, capped at 20000.
+            minimum: 1
+            maximum: 20000
+      request:
+        method: GET
+        path: /api/v1/repos/{{input.owner}}/{{input.repo}}/git/blobs/{{input.sha}}
+      response:
+        successCodes: [200]
+        format: json
+        select: content
+        decodeBase64: true
+        paginate: true
+        structured: true
         maxBytes: 4194304

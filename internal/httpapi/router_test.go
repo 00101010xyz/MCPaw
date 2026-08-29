@@ -99,7 +99,7 @@ func newApp(t *testing.T, wrapRepos func(store.Repositories) store.Repositories)
 	instances := service.NewInstances(service.InstancesConfig{
 		Repo: repos.Instances(), Connectors: connectors, Sealer: sealer, Executor: executor, Audit: audit,
 	})
-	backend := service.NewMCPBackend(instances, nil, audit, "test", logger)
+	backend := service.NewMCPBackend(instances, nil, nil, audit, "test", logger)
 
 	mcpSessions := mcp.NewSessionStore(mcp.SessionConfig{})
 	mcpServer, err := mcp.NewServer(mcp.ServerConfig{

@@ -24,6 +24,7 @@ import (
 	"github.com/00101010xyz/mcpaw/internal/secrets"
 	"github.com/00101010xyz/mcpaw/internal/service"
 	"github.com/00101010xyz/mcpaw/internal/store/sqlitestore"
+	"github.com/00101010xyz/mcpaw/internal/usage"
 )
 
 // harness wires a real Server against a real (temp-file) database and the
@@ -40,6 +41,7 @@ type harness struct {
 	tokens     *service.Tokens
 	audit      *service.Audit
 	indexer    *service.Indexer
+	usage      *service.Usage
 }
 
 func newHarness(t *testing.T) *harness {
@@ -88,9 +90,16 @@ func newHarness(t *testing.T) *harness {
 		Embedder: &index.Embedder{Client: executor.Client()}, Sealer: sealer, Logger: logger,
 	})
 
+	usageStore, err := usage.Open(ctx, filepath.Join(t.TempDir(), "usage.db"))
+	if err != nil {
+		t.Fatalf("usage.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = usageStore.Close() })
+	usageSvc := service.NewUsage(usageStore, audit, logger)
+
 	srv, err := New(Config{
 		Users: users, Sessions: sessions, Instances: instances, Connectors: connectors,
-		Tokens: tokens, Audit: audit, Indexer: indexer, Logger: logger, Version: "test",
+		Tokens: tokens, Audit: audit, Indexer: indexer, Usage: usageSvc, Logger: logger, Version: "test",
 	})
 	if err != nil {
 		t.Fatalf("webui.New: %v", err)
@@ -98,7 +107,7 @@ func newHarness(t *testing.T) *harness {
 
 	return &harness{
 		server: srv, users: users, sessions: sessions,
-		instances: instances, connectors: connectors, tokens: tokens, audit: audit, indexer: indexer,
+		instances: instances, connectors: connectors, tokens: tokens, audit: audit, indexer: indexer, usage: usageSvc,
 	}
 }
 
@@ -152,6 +161,8 @@ func TestEveryPageRendersForAnAuthenticatedAdmin(t *testing.T) {
 		{"instance detail", instanceDetailRequest(admin, inst.ID), h.server.GetInstance},
 		{"connectors", authedRequest(http.MethodGet, "/connectors", admin), h.server.GetConnectors},
 		{"tokens", authedRequest(http.MethodGet, "/tokens", admin), h.server.GetTokens},
+		{"usage", authedRequest(http.MethodGet, "/usage", admin), h.server.GetUsage},
+		{"settings usage", authedRequest(http.MethodGet, "/settings/usage", admin), h.server.GetSettingsUsage},
 		{"audit", authedRequest(http.MethodGet, "/audit", admin), h.server.GetAudit},
 		{"account", authedRequest(http.MethodGet, "/account", admin), h.server.GetAccount},
 		{"settings search", authedRequest(http.MethodGet, "/settings/semantic-search", admin), h.server.GetSettingsSearch},

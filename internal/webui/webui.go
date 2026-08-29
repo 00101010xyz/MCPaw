@@ -228,7 +228,7 @@ func (s *Server) buildPalette(ctx context.Context) []paletteItem {
 	items := []paletteItem{
 		{First: true, Group: "Sections", Label: "Instances", Search: "instances home", Href: "/"},
 		{Group: "Sections", Label: "New instance", Search: "new instance create", Href: "/instances/new"},
-		{Group: "Sections", Label: "Connectors", Search: "connectors import manifest", Href: "/connectors"},
+		{Group: "Sections", Label: "Connectors", Search: "connectors", Href: "/connectors"},
 		{Group: "Sections", Label: "Semantic search", Search: "semantic search embedder settings", Href: "/settings/semantic-search"},
 		{Group: "Sections", Label: "Tokens", Search: "tokens access bearer", Href: "/tokens"},
 		{Group: "Sections", Label: "Usage log", Search: "usage log requests tool calls", Href: "/usage"},

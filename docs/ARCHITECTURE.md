@@ -110,6 +110,41 @@ spec:
         includeHeaders: [Total-Results, Link]
 ```
 
+### Every tool must page
+
+Any tool whose response is not inherently bounded to one small object — a list, a search
+result set, a whole document or file — must accept paging arguments and advertise them in
+its description, not just its schema: a model decides whether to page further from what
+it reads, so "call again with offset set to next_offset" has to be in the text, not left
+implicit. A single-item lookup (`zotero_get_item`, `linkding_get_bookmark`,
+`gitea_get_repo`) or a genuinely small, fixed-shape response (a formatted citation) is the
+one exception — paging something that can never be more than a few hundred bytes adds a
+response envelope with nothing to page through.
+
+Two mechanisms, picked by what the upstream API itself offers, never both at once:
+
+- **Native upstream pagination** — when the upstream already accepts something like
+  `limit`/`offset`, `page`/`per_page`, or `start`/`limit`, the manifest just forwards it
+  (`zotero_list_top_items`, `gitea_list_repos`, `linkding_list_bookmarks`). This is
+  strongly preferred: the upstream does the actual work of not fetching everything, and a
+  response header or field (`Total-Results`, `truncated`) tells the caller whether more
+  exists.
+- **App-level pagination** (`response.paginate: true`) — for the other shape: an upstream
+  endpoint that hands back one large text blob with no chunking of its own (a whole file's
+  contents, extracted full text, an archived page's HTML). The engine slices it into a
+  bounded page and returns `{text, offset, length, total_length, next_offset, has_more}` —
+  the same envelope regardless of whether the source was `format: text` directly or a
+  `format: json` field selected out with `select` (optionally `decodeBase64` first). See
+  `internal/engine/response.go`.
+
+When a tool already exists that some *other* part of the platform depends on for the
+complete, unpaginated response — a source crawler indexing full document text, say — that
+tool is left alone and a new, differently-named tool is added alongside it for the paged,
+MCP-client-facing read, with each tool's description pointing at the other
+(`gitea_get_file`/`gitea_read_file`, `zotero_get_item_fulltext`/`zotero_read_item_fulltext`,
+`linkding_get_asset_content`/`linkding_read_asset_content`). Never repurpose the shared
+tool's response shape to add paging out from under its other caller.
+
 ---
 
 ## 5. Security considerations

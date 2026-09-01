@@ -569,3 +569,78 @@ func TestManifestMarshalRoundTrip(t *testing.T) {
 		t.Fatalf("round-tripped manifest no longer compiles: %v", err)
 	}
 }
+
+// pagingExemptTools lists tools that intentionally take no paging argument,
+// each for a reason spelled out in docs/ARCHITECTURE.md § "Every tool must
+// page": a single-item lookup, a small fixed-shape response, or a raw
+// whole-content tool a source crawler depends on verbatim (a paginated
+// companion tool exists alongside each of those instead).
+var pagingExemptTools = map[string]string{
+	"gitea_get_repo":               "single-item lookup",
+	"gitea_get_file":               "crawler-shared raw blob; see gitea_read_file",
+	"zotero_get_item":              "single-item lookup",
+	"zotero_get_item_fulltext":     "crawler-shared raw text; see zotero_read_item_fulltext",
+	"zotero_get_item_bibliography": "one small, fixed-shape citation",
+	"linkding_get_bookmark":        "single-item lookup",
+	"linkding_get_asset_content":   "crawler-shared raw content; see linkding_read_asset_content",
+}
+
+// nativePagingParamPairs are the argument names this codebase recognises as
+// "the upstream paginates this for us" — every builtin list tool forwards
+// one of these pairs to the upstream API. App-level pagination
+// (CompiledTool.Paginate) is checked separately, since those tools also
+// declare offset/limit in their schema but the engine — not a forwarded
+// query parameter — is what does the paging.
+var nativePagingParamPairs = [][2]string{
+	{"limit", "offset"},
+	{"limit", "start"},
+	{"page", "per_page"},
+	{"page", "limit"},
+}
+
+// TestEveryToolSupportsPaging enforces the architecture principle in
+// docs/ARCHITECTURE.md § "Every tool must page": any tool not explicitly
+// exempted must either set response.paginate (the engine pages a large text
+// blob itself) or declare one of the recognised native-pagination argument
+// pairs, so a future tool added without paging fails here instead of
+// shipping silently unbounded.
+func TestEveryToolSupportsPaging(t *testing.T) {
+	recs, err := Builtins()
+	if err != nil {
+		t.Fatalf("Builtins: %v", err)
+	}
+	for _, rec := range recs {
+		m, err := ParseManifest(rec.Manifest)
+		if err != nil {
+			t.Fatalf("ParseManifest(%s): %v", rec.ID, err)
+		}
+		c, err := Compile(m)
+		if err != nil {
+			t.Fatalf("Compile(%s): %v", rec.ID, err)
+		}
+		for _, tool := range c.Tools {
+			name := tool.Name()
+			if _, exempt := pagingExemptTools[name]; exempt {
+				continue
+			}
+			if tool.Paginate {
+				continue
+			}
+			props, _ := tool.Def.InputSchema["properties"].(map[string]any)
+			paged := false
+			for _, pair := range nativePagingParamPairs {
+				_, hasA := props[pair[0]]
+				_, hasB := props[pair[1]]
+				if hasA && hasB {
+					paged = true
+					break
+				}
+			}
+			if !paged {
+				t.Errorf("%s: no paging support (neither response.paginate nor a recognised "+
+					"limit/offset, limit/start or page/per_page argument pair) — either add one "+
+					"or add it to pagingExemptTools with a reason", name)
+			}
+		}
+	}
+}

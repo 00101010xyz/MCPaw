@@ -3,7 +3,7 @@ kind: Connector
 metadata:
   id: linkding
   name: Linkding
-  version: 1.1.0
+  version: 1.2.0
   description: >-
     Read-only access to a Linkding bookmark manager. Lets an MCP client search
     and read bookmarks, and read the archived HTML snapshot Linkding took of
@@ -154,9 +154,10 @@ spec:
       title: List a bookmark's saved snapshots and files
       description: >-
         List the archived HTML snapshots and uploaded files attached to one
-        bookmark. Use this to find a snapshot's asset id before reading its
-        content with linkding_get_asset_content — look for asset_type
-        "snapshot" and status "complete".
+        bookmark, one page at a time. Use this to find a snapshot's asset id
+        before reading its content with linkding_get_asset_content — look
+        for asset_type "snapshot" and status "complete". A bookmark rarely
+        has more than a handful of assets, so a second page is unusual.
       annotations:
         readOnlyHint: true
         openWorldHint: false
@@ -169,9 +170,19 @@ spec:
             type: integer
             description: Bookmark id, from linkding_list_bookmarks.
             minimum: 1
+          limit:
+            type: integer
+            minimum: 1
+            maximum: 100
+          offset:
+            type: integer
+            minimum: 0
       request:
         method: GET
         path: /api/bookmarks/{{input.bookmarkId}}/assets/
+        query:
+          limit: "{{input.limit|default:100}}"
+          offset: "{{input.offset|default:0}}"
       response:
         successCodes: [200]
         format: json

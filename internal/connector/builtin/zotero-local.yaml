@@ -3,7 +3,7 @@ kind: Connector
 metadata:
   id: zotero-local
   name: Zotero (Local API)
-  version: 1.4.0
+  version: 1.5.0
   description: >-
     Read-only access to a Zotero library through the HTTP API that the Zotero
     desktop application exposes on the local machine. The same manifest also
@@ -197,8 +197,10 @@ spec:
     - name: zotero_get_item_children
       title: Get item children
       description: >-
-        List the child notes and attachments of an item. Use this to read the
-        notes attached to a paper.
+        List the child notes and attachments of an item, one page at a
+        time — use this to read the notes attached to a paper. Check the
+        Total-Results response header against limit+start to know whether
+        to page further.
       annotations:
         readOnlyHint: true
         openWorldHint: false
@@ -214,11 +216,16 @@ spec:
             type: integer
             minimum: 1
             maximum: 100
+          start:
+            type: integer
+            description: Zero-based offset for paging through results.
+            minimum: 0
       request:
         method: GET
         path: /api/users/{{vars.userId}}/items/{{input.itemKey}}/children
         query:
           limit: "{{input.limit|default:50}}"
+          start: "{{input.start|default:0}}"
           format: json
           include: data
       response:
@@ -412,7 +419,10 @@ spec:
 
     - name: zotero_list_tags
       title: List tags
-      description: List the tags used in the library, optionally filtered by a prefix.
+      description: >-
+        List the tags used in the library, one page at a time, optionally
+        filtered by a prefix. Check the Total-Results response header
+        against limit+start to know whether to page further.
       annotations:
         readOnlyHint: true
         openWorldHint: false
@@ -428,12 +438,17 @@ spec:
             type: integer
             minimum: 1
             maximum: 200
+          start:
+            type: integer
+            description: Zero-based offset for paging through results.
+            minimum: 0
       request:
         method: GET
         path: /api/users/{{vars.userId}}/tags
         query:
           q: "{{input.query}}"
           limit: "{{input.limit|default:100}}"
+          start: "{{input.start|default:0}}"
           format: json
       response:
         successCodes: [200]
@@ -442,7 +457,10 @@ spec:
 
     - name: zotero_list_saved_searches
       title: List saved searches
-      description: List the saved searches defined in the library.
+      description: >-
+        List the saved searches defined in the library, one page at a time.
+        Check the Total-Results response header against limit+start to know
+        whether to page further.
       annotations:
         readOnlyHint: true
         openWorldHint: false
@@ -454,15 +472,21 @@ spec:
             type: integer
             minimum: 1
             maximum: 100
+          start:
+            type: integer
+            description: Zero-based offset for paging through results.
+            minimum: 0
       request:
         method: GET
         path: /api/users/{{vars.userId}}/searches
         query:
           limit: "{{input.limit|default:50}}"
+          start: "{{input.start|default:0}}"
           format: json
       response:
         successCodes: [200]
         format: json
+        includeHeaders: [Total-Results]
 
     - name: zotero_get_item_bibliography
       title: Format an item as a citation
@@ -498,8 +522,12 @@ spec:
     - name: zotero_export_items
       title: Export items in a bibliographic format
       description: >-
-        Export one or more items as BibTeX, RIS, CSL JSON or another supported
-        export format. Supply up to 50 comma separated item keys.
+        Export one or more items as BibTeX, RIS, CSL JSON or another
+        supported export format, a bounded page at a time — up to 50 items'
+        worth of records can still be large. Supply up to 50 comma separated
+        item keys. Starts at offset 0 by default; when the response's
+        has_more is true, call again with offset set to its next_offset to
+        continue.
       annotations:
         readOnlyHint: true
         openWorldHint: false
@@ -515,6 +543,15 @@ spec:
           format:
             type: string
             enum: [bibtex, biblatex, ris, csljson, mods, refer, rdf_bibliontology]
+          offset:
+            type: integer
+            description: Character offset to start reading from. Defaults to 0.
+            minimum: 0
+          limit:
+            type: integer
+            description: Maximum characters to return. Defaults to 4000, capped at 20000.
+            minimum: 1
+            maximum: 20000
       request:
         method: GET
         path: /api/users/{{vars.userId}}/items
@@ -524,10 +561,15 @@ spec:
       response:
         successCodes: [200]
         format: text
+        paginate: true
+        structured: true
 
     - name: zotero_list_trash
       title: List trashed items
-      description: List items currently in the library trash.
+      description: >-
+        List items currently in the library trash, one page at a time.
+        Check the Total-Results response header against limit+start to
+        know whether to page further.
       annotations:
         readOnlyHint: true
         openWorldHint: false
@@ -539,11 +581,16 @@ spec:
             type: integer
             minimum: 1
             maximum: 100
+          start:
+            type: integer
+            description: Zero-based offset for paging through results.
+            minimum: 0
       request:
         method: GET
         path: /api/users/{{vars.userId}}/items/trash
         query:
           limit: "{{input.limit|default:25}}"
+          start: "{{input.start|default:0}}"
           format: json
           include: data
       response:

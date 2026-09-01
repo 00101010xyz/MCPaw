@@ -3,7 +3,7 @@ kind: Connector
 metadata:
   id: gitea
   name: Gitea
-  version: 2.1.0
+  version: 2.2.0
   description: >-
     Read-only access to Gitea repositories — self-hosted or gitea.com. Lets
     an MCP client browse a repository's file tree and read file contents;
@@ -142,11 +142,12 @@ spec:
     - name: gitea_list_tree
       title: List repository files
       description: >-
-        List every file and directory in one repository at one ref,
-        recursively, as a flat array of {path, type, sha, size}. Use this to
-        find a file's blob SHA before reading it with gitea_get_file. Large
-        repositories may be truncated by the upstream API; the response's
-        "truncated" field says so.
+        List files and directories in one repository at one ref, recursively,
+        as {sha, url, truncated, page, total_count, tree: [{path, type, sha,
+        size}]} — one page at a time, newest-first order not guaranteed
+        (Gitea's own tree order). Use this to find a file's blob SHA before
+        reading it with gitea_get_file. When "truncated" is true, more files
+        exist; call again with page set to page+1 to continue.
       annotations:
         readOnlyHint: true
         openWorldHint: false
@@ -166,11 +167,22 @@ spec:
           ref:
             type: string
             description: Branch, tag or commit, e.g. main.
+          page:
+            type: integer
+            description: Page number, starting at 1. Defaults to 1.
+            minimum: 1
+          per_page:
+            type: integer
+            description: Entries per page. Defaults to 1000.
+            minimum: 1
+            maximum: 1000
       request:
         method: GET
         path: /api/v1/repos/{{input.owner}}/{{input.repo}}/git/trees/{{input.ref}}
         query:
           recursive: "true"
+          page: "{{input.page|default:1}}"
+          per_page: "{{input.per_page|default:1000}}"
       response:
         successCodes: [200]
         format: json

@@ -6,7 +6,7 @@
 # healthcheck` (cmd/mcpaw/healthcheck.go) exists specifically because a
 # distroless image has no curl for the HEALTHCHECK to shell out to.
 
-FROM golang:1.25-bookworm AS builder
+FROM golang:1.27-bookworm AS builder
 WORKDIR /src
 
 # Dependency layers first so `docker build` reuses them until go.mod/go.sum
